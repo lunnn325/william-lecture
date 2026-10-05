@@ -64,6 +64,8 @@ node scripts/analyze-diagnostics.mjs "C:\path\diagnostics.jsonl"
 
 0.0.4 缩短已定稿英文的额外缓冲等待，最多同时翻译两段，复用网络连接，并让首段中文先显示再写诊断。旧课堂和设备上已有的设置/Keychain 可继续使用。比较版本时保留同一音源、模型和网络，导出 diagnostics 查看 `buffer_after_final_receipt`、`translation_queue_after_buffer`、`gpt_request_to_first`，再判断等待主要发生在哪里。
 
+0.0.5 加固暂停收尾、跨课堂回调、网络恢复/手动取消、异常退出恢复与导出。历史页可生成整堂 M4A；分块编码为 48 kHz 单声道 AAC 96 kbps，已知录音空档保留为静音，原 CAF 不变。录音停止且保存完成后才能导出；文字与诊断为独立快照，补翻译后可再次生成。范围、验证数据及真机待测事项见 [本轮加固报告](docs/NIGHTLY_HARDENING_REPORT.md)。
+
 ## 构建与结构
 
 Windows 修改后提交即可触发 CI。CI 使用 `macos-26`、Xcode 26.5、XcodeGen 2.46.0；先运行 `swift test`，再编译真机 arm64 App，生成未签名 IPA。Apple 证书和 OpenAI Key 都不需要上传到 CI。私有仓库使用你的 Actions 额度，详见 [GitHub runner 说明](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。

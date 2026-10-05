@@ -13,9 +13,9 @@ struct AudioPacket: @unchecked Sendable {
 final class AudioRecorder: @unchecked Sendable {
     enum Event: Sendable {
         case started(Double), chunk(String, Double), paused(Double), stopped(Double)
-        case configuration([String: String])
+        case configuration([String: String]), metadataWarning(String)
         case interrupted(Double, Bool), recoveryRequested, routeChanged, failure(String, Double)
-        case meter(Double, PCMLevelSummary, UInt64, Double)
+        case meter(Double, PCMLevelSummary, UInt64, Double, UInt64)
     }
     private let callbackLock = NSLock()
     private var eventCallback: (@Sendable (Event) -> Void)?
@@ -45,13 +45,20 @@ final class AudioRecorder: @unchecked Sendable {
     private var levels = PCMLevelAccumulator()
     private var observers: [NSObjectProtocol] = []
     private var faultReported = false
+    private let captureGate = CaptureGate()
+    private var generation = 0
+    private var closing = false
+    private var pauseWaiters: [() -> Void] = []
+    private var closedBytes: UInt64 = 0
+    private var currentURL: URL?
+    private var chunkHasFrames = false
 
     init() {
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: nil) { [weak self] note in
             guard let self, let type = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt else { return }
             if type == AVAudioSession.InterruptionType.began.rawValue {
-                self.queue.async { if self.recording { self.pauseOnQueue(); self.onEvent?(.interrupted(Date().timeIntervalSince(self.origin), true)) } }
+                self.queue.async { if self.recording { self.pauseOnQueue { self.onEvent?(.interrupted(Date().timeIntervalSince(self.origin), true)) } } }
             } else {
                 let raw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
                 if AVAudioSession.InterruptionOptions(rawValue: raw).contains(.shouldResume) { self.onEvent?(.recoveryRequested) }
@@ -61,15 +68,18 @@ final class AudioRecorder: @unchecked Sendable {
             guard let self else { return }
             self.queue.async {
                 let wasRecording = self.recording
-                self.pauseOnQueue(); self.engine = AVAudioEngine()
-                if wasRecording { self.onEvent?(.interrupted(Date().timeIntervalSince(self.origin), false)); self.onEvent?(.recoveryRequested) }
+                self.pauseOnQueue {
+                    self.engine = AVAudioEngine()
+                    if wasRecording { self.onEvent?(.interrupted(Date().timeIntervalSince(self.origin), false)); self.onEvent?(.recoveryRequested) }
+                }
             }
         })
-        observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: nil) { [weak self] _ in
+        observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: nil) { [weak self] note in
             guard let self else { return }
             self.queue.async {
-                if self.recording && !self.engine.isRunning {
-                    self.pauseOnQueue(); self.onEvent?(.interrupted(Date().timeIntervalSince(self.origin), false)); self.onEvent?(.recoveryRequested)
+                if let changedEngine = note.object as? AVAudioEngine, changedEngine === self.engine,
+                   self.recording && !self.engine.isRunning {
+                    self.pauseOnQueue { self.onEvent?(.interrupted(Date().timeIntervalSince(self.origin), false)); self.onEvent?(.recoveryRequested) }
                 }
             }
         })
@@ -93,16 +103,19 @@ final class AudioRecorder: @unchecked Sendable {
             queue.async { do { try self.beginOnQueue(); continuation.resume() } catch { continuation.resume(throwing: error) } }
         }
     }
-    func pause() async { await withCheckedContinuation { continuation in queue.async { self.pauseOnQueue(); continuation.resume() } } }
+    func pause() async { await withCheckedContinuation { continuation in queue.async { self.pauseOnQueue { continuation.resume() } } } }
     func stop() async {
         await withCheckedContinuation { continuation in queue.async {
-            self.pauseOnQueue(); self.onEvent?(.stopped(Date().timeIntervalSince(self.origin)))
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            continuation.resume()
+            self.pauseOnQueue {
+                self.onEvent?(.stopped(Date().timeIntervalSince(self.origin)))
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                continuation.resume()
+            }
         } }
     }
     private func beginOnQueue() throws {
         guard !recording else { return }
+        guard !closing else { throw WLFailure.message("录音正在保存尾部，请稍后恢复") }
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.record, mode: .default, options: [])
         try session.setPreferredSampleRate(48_000); try session.setActive(true)
@@ -117,21 +130,27 @@ final class AudioRecorder: @unchecked Sendable {
         let offset = Date().timeIntervalSince(origin)
         try openChunk(format: format, offset: offset)
         faultReported = false; recording = true
+        generation = captureGate.open()
+        let captureGeneration = generation
         input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, time in
             guard let self else { return }
             // Copy tap-owned memory before returning. A full disk queue is a recording fault, never a silent drop.
             guard self.slots.wait(timeout: .now()) == .success else {
-                self.queue.async { self.fail("Audio disk queue overflow; capture stopped", offset: Date().timeIntervalSince(self.origin)) }
+                self.reportCaptureFailure("Audio disk queue overflow; capture stopped", generation: captureGeneration)
                 return
             }
-            guard let copy = Self.clone(buffer) else { self.slots.signal(); self.queue.async { self.fail("Cannot copy audio buffer", offset: Date().timeIntervalSince(self.origin)) }; return }
+            guard let copy = Self.clone(buffer) else { self.slots.signal(); self.reportCaptureFailure("Cannot copy audio buffer", generation: captureGeneration); return }
             let start = time.isHostTimeValid ? AVAudioTime.seconds(forHostTime: time.hostTime) - self.originUptime : Date().timeIntervalSince(self.origin) - Double(copy.frameLength) / copy.format.sampleRate
             let packet = AudioPacket(buffer: copy, offset: max(0, start))
-            self.queue.async {
+            let accepted = self.captureGate.offer(generation: captureGeneration) { self.queue.async {
                 defer { self.slots.signal() }
-                guard self.recording else { return }
+                guard self.generation == captureGeneration, self.file != nil else { return }
                 do {
-                    if packet.offset - self.chunkStart >= 30 || self.inputFormat != copy.format { self.file = nil; try self.openChunk(format: copy.format, offset: packet.offset) }
+                    if packet.offset - self.chunkStart >= 30 || self.inputFormat != copy.format { self.closeChunk(); try self.openChunk(format: copy.format, offset: packet.offset) }
+                    if !self.chunkHasFrames {
+                        self.chunkHasFrames = true; self.chunkStart = packet.offset
+                        self.writeIndex(Diagnostic("audio_chunk_first_frame", offset: packet.offset, fields: ["file": self.currentURL!.lastPathComponent]))
+                    }
                     try self.file?.write(from: copy)
                     self.capturedSeconds += Double(copy.frameLength) / copy.format.sampleRate
                     self.levels.append(copy)
@@ -139,14 +158,16 @@ final class AudioRecorder: @unchecked Sendable {
                     self.onPacket?(packet)
                     if packet.offset - self.lastMeter >= 1 {
                         self.lastMeter = packet.offset
-                        self.onEvent?(.meter(packet.offset, self.levels.snapshotAndReset(), Self.memoryBytes(), self.capturedSeconds))
+                        let currentBytes = self.currentURL.flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? NSNumber }?.uint64Value ?? 0
+                        self.onEvent?(.meter(packet.offset, self.levels.snapshotAndReset(), Self.memoryBytes(), self.capturedSeconds, self.closedBytes + currentBytes))
                     }
                 } catch { self.fail("Audio write: \(error.localizedDescription)", offset: packet.offset) }
-            }
+            } }
+            if !accepted { self.slots.signal() }
         }
         tapInstalled = true
         do { engine.prepare(); try engine.start(); onEvent?(.started(offset)) }
-        catch { pauseOnQueue(); throw error }
+        catch { pauseOnQueue {}; throw error }
     }
     private func openChunk(format: AVAudioFormat, offset: Double) throws {
         guard let directory else { throw WLFailure.message("Missing audio directory") }
@@ -154,24 +175,55 @@ final class AudioRecorder: @unchecked Sendable {
         let url = directory.appendingPathComponent(name)
         // Recoverable chunks; 16-bit PCM reduces space, preserving microphone sample rate/channels.
         file = try PCMArchive.open(at: url, inputFormat: format)
+        currentURL = url
+        chunkHasFrames = false
         inputFormat = format
         try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
         var resourceURL = url
         var resourceValues = URLResourceValues(); resourceValues.isExcludedFromBackup = true
         try resourceURL.setResourceValues(resourceValues)
         chunkStart = offset
-        try JSONLines.append(Diagnostic("audio_chunk_open", offset: offset, fields: ["file": name, "sample_rate": "\(format.sampleRate)", "channels": "\(format.channelCount)"]), to: directory.appendingPathComponent("audio-index.jsonl"))
+        writeIndex(Diagnostic("audio_chunk_open", offset: offset, fields: ["file": name, "sample_rate": "\(format.sampleRate)", "channels": "\(format.channelCount)"]))
         onEvent?(.chunk(name, offset))
     }
-    private func pauseOnQueue() {
+    private func closeChunk() {
+        file = nil
+        if let currentURL {
+            closedBytes += ((try? FileManager.default.attributesOfItem(atPath: currentURL.path)[.size]) as? NSNumber)?.uint64Value ?? 0
+        }
+        currentURL = nil
+    }
+    private func writeIndex(_ item: Diagnostic) {
+        guard let directory else { return }
+        do { try JSONLines.append(item, to: directory.appendingPathComponent("audio-index.jsonl")) }
+        catch { onEvent?(.metadataWarning("音频索引写盘失败：\(error.localizedDescription)；原始音频继续录制")) }
+    }
+    private func pauseOnQueue(_ completion: @escaping () -> Void) {
+        pauseWaiters.append(completion)
+        guard !closing else { return }
+        closing = true
+        captureGate.close()
         recording = false
         if tapInstalled { engine.inputNode.removeTap(onBus: 0); tapInstalled = false }
-        engine.stop(); file = nil
-        onEvent?(.paused(Date().timeIntervalSince(origin)))
+        engine.stop()
+        // Admission is closed, so this barrier follows every accepted audio write,
+        // including callbacks which enqueued while the pause operation was starting.
+        queue.async {
+            self.closeChunk(); self.closing = false
+            self.onEvent?(.paused(Date().timeIntervalSince(self.origin)))
+            let waiters = self.pauseWaiters; self.pauseWaiters.removeAll()
+            waiters.forEach { $0() }
+        }
     }
     private func fail(_ message: String, offset: Double) {
         guard !faultReported else { return }; faultReported = true
-        pauseOnQueue(); onEvent?(.failure(message, offset))
+        pauseOnQueue { self.onEvent?(.failure(message, offset)) }
+    }
+    private func reportCaptureFailure(_ message: String, generation: Int) {
+        captureGate.offer(generation: generation) { queue.async {
+            guard self.generation == generation, self.recording else { return }
+            self.fail(message, offset: Date().timeIntervalSince(self.origin))
+        } }
     }
     private static func clone(_ source: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         guard let copy = AVAudioPCMBuffer(pcmFormat: source.format, frameCapacity: source.frameLength) else { return nil }

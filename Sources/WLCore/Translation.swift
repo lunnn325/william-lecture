@@ -84,6 +84,8 @@ public final class Translator: @unchecked Sendable {
     private var requests: [UUID: Task<Void, Never>] = [:]
     private var diagnosticWrites: Task<Void, Never>?
     private var suspended = false
+    private var automaticRetryAllowed = false
+    private var manuallyCancelled = false
     private var wakeRequested = false
     private var newestNext = false
     private let store: SessionStore
@@ -91,6 +93,7 @@ public final class Translator: @unchecked Sendable {
     private let session: LectureSession
     private let operation: TranslationOperation
     private let maxConcurrent: Int
+    var resourceCounts: (requests: Int, streams: Int) { (requests.count, streamingText.count + streamingFirst.count) }
 
     public init(store: SessionStore, config: TranslatorConfiguration, session: LectureSession,
                 maxConcurrent: Int = 2, operation: TranslationOperation? = nil) {
@@ -103,7 +106,7 @@ public final class Translator: @unchecked Sendable {
     }
 
     public func kick(force: Bool = false) {
-        if force { suspended = false }
+        if force { suspended = false; manuallyCancelled = false }
         guard !suspended else { return }
         if pump != nil { wakeRequested = true; return }
         pump = Task { [weak self] in
@@ -113,9 +116,15 @@ public final class Translator: @unchecked Sendable {
         }
     }
     public func cancel() {
-        suspended = true; wakeRequested = false; pump?.cancel()
+        manuallyCancelled = true; suspended = true; wakeRequested = false; pump?.cancel()
         for task in requests.values { task.cancel() }
     }
+    public func networkRestored() {
+        guard !manuallyCancelled else { return }
+        if suspended && automaticRetryAllowed { kick(force: true) }
+        else if !suspended { kick() }
+    }
+    public func flushDiagnostics() async { await diagnosticWrites?.value }
     public func waitForCancellation() async {
         cancel()
         await pump?.value
@@ -199,7 +208,7 @@ public final class Translator: @unchecked Sendable {
                     } else {
                         segment.status = retryable ? .pending : .failed
                         try await store.append(segment, session: session.id)
-                        onUpdate?(segment); suspended = true
+                        onUpdate?(segment); suspended = true; automaticRetryAllowed = retryable
                         onState?("翻译暂停：\(segment.error ?? "未知错误")；可点击补翻译")
                         return
                     }

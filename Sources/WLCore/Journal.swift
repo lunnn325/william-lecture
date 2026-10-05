@@ -91,7 +91,11 @@ public actor SessionStore {
         return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             .compactMap { directory in
                 guard let data = try? Data(contentsOf: directory.appendingPathComponent("session.json")) else { return nil }
-                return try? decoder.decode(LectureSession.self, from: data)
+                guard var session = try? decoder.decode(LectureSession.self, from: data),
+                      session.id.uuidString.caseInsensitiveCompare(directory.lastPathComponent) == .orderedSame else { return nil }
+                let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+                session.audioFiles = files.filter { $0.pathExtension == "caf" }.map(\.lastPathComponent).sorted()
+                return session
             }.sorted { $0.startedAt > $1.startedAt }
     }
     public func append(_ segment: TranscriptSegment, session: UUID) throws {
@@ -102,7 +106,9 @@ public actor SessionStore {
         }
     }
     public func log(_ diagnostic: Diagnostic, session: UUID) throws {
-        try JSONLines.append(diagnostic, to: folder(session).appendingPathComponent("diagnostics.jsonl"))
+        var safe = diagnostic
+        safe.fields = safe.fields.mapValues(DiagnosticRedaction.redact)
+        try JSONLines.append(safe, to: folder(session).appendingPathComponent("diagnostics.jsonl"))
     }
     public func appendFinal(_ piece: SpeechPiece, session: UUID) throws {
         try JSONLines.append(piece, to: folder(session).appendingPathComponent("speech-final.jsonl"))
@@ -130,29 +136,55 @@ public actor SessionStore {
         }
         return Array(candidates.prefix(max(0, limit)))
     }
-    public func recover() throws {
-        for var session in try sessions() where [.recording, .paused, .interrupted].contains(session.state) {
-            session.state = .recovered; session.stoppedAt = Date()
+    @discardableResult public func recover() throws -> [String] {
+        try prepare()
+        var issues: [String] = []
+        let directories = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        let readable = try sessions()
+        let readableIDs = Set(readable.map(\.id))
+        for directory in directories {
+            if let id = UUID(uuidString: directory.lastPathComponent), !readableIDs.contains(id) {
+                issues.append("课堂 \(id) 的 metadata 无法读取；原文件保留，可从文件共享取回")
+            }
+        }
+        for var session in readable where [.recording, .paused, .interrupted].contains(session.state) {
+            do {
+            session.state = .recovered
             // Include the current chunk even if the app died before its close event.
             let files = try FileManager.default.contentsOfDirectory(at: folder(session.id), includingPropertiesForKeys: nil)
             session.audioFiles = files.filter { $0.pathExtension == "caf" }.map(\.lastPathComponent).sorted()
-            let lastEnd = try segments(session.id).map(\.end).max() ?? -1
+            let savedSegments = try segments(session.id)
+            let coverage = TranscriptCoverage(savedSegments)
+            let lastEnd = savedSegments.map(\.end).max() ?? -1
+            var lastOffset = max(session.duration, lastEnd)
+            for name in ["audio-index.jsonl", "diagnostics.jsonl"] {
+                try JSONLines.scan(Diagnostic.self, at: folder(session.id).appendingPathComponent(name)) {
+                    if let offset = $0.offset, offset.isFinite { lastOffset = max(lastOffset, offset) }
+                }
+            }
             var buffer = SentenceBuffer()
             try JSONLines.scan(SpeechPiece.self, at: folder(session.id).appendingPathComponent("speech-final.jsonl")) { piece in
-                if piece.end > lastEnd + 0.001, let segment = buffer.append(piece) {
+                if piece.end.isFinite { lastOffset = max(lastOffset, piece.end) }
+                if !coverage.contains(piece), let segment = buffer.append(piece) {
                     try append(segment, session: session.id)
                 }
             }
             if let tail = buffer.flush() { try append(tail, session: session.id) }
+            session.duration = max(0, lastOffset)
+            session.stoppedAt = session.startedAt.addingTimeInterval(session.duration)
             try save(session)
             try log(Diagnostic("process_recovery", fields: ["gap": "Recording ended when app/process terminated; audio files retained"]), session: session.id)
+            } catch {
+                issues.append("课堂 \(session.id) 恢复不完整：\(error.localizedDescription)；原文件保留")
+            }
         }
+        return issues
     }
     public func export(_ id: UUID, language: ExportLanguage, markdown: Bool) throws -> URL {
         guard let session = try sessions().first(where: { $0.id == id }) else { throw WLFailure.message("Session not found") }
         let directory = folder(id).appendingPathComponent("Exports", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let url = directory.appendingPathComponent("WilliamLecture-\(language.rawValue).\(markdown ? "md" : "txt")")
+        let url = directory.appendingPathComponent("WilliamLecture-\(language.rawValue)-\(UUID().uuidString).\(markdown ? "md" : "txt")")
         let records = try segments(id)
         var lines = ["\(markdown ? "# " : "")\(session.course)", "Session: \(session.id)", "Date: \(session.startedAt.ISO8601Format())", ""]
         var gaps: [Diagnostic] = []
@@ -174,6 +206,25 @@ public actor SessionStore {
         }
         try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
         return url
+    }
+    /// A stable shareable file, not the journal still receiving late translation events.
+    public func exportDiagnostics(_ id: UUID) throws -> URL {
+        let source = folder(id).appendingPathComponent("diagnostics.jsonl")
+        let directory = folder(id).appendingPathComponent("Exports", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let target = directory.appendingPathComponent("diagnostics-\(UUID().uuidString).jsonl")
+        if FileManager.default.fileExists(atPath: source.path) { try FileManager.default.copyItem(at: source, to: target) }
+        else { try Data().write(to: target, options: .atomic) }
+        return target
+    }
+    public func audioOffsets(_ id: UUID) throws -> [String: Double] {
+        var offsets: [String: Double] = [:]
+        try JSONLines.scan(Diagnostic.self, at: folder(id).appendingPathComponent("audio-index.jsonl")) {
+            if ["audio_chunk_open", "audio_chunk_first_frame"].contains($0.event), let name = $0.fields["file"],
+               name == URL(fileURLWithPath: name).lastPathComponent,
+               let offset = $0.offset, offset.isFinite { offsets[name] = max(0, offset) }
+        }
+        return offsets
     }
     public nonisolated static func timestamp(_ seconds: Double) -> String {
         let total = max(0, Int(seconds)); return String(format: "%02d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)

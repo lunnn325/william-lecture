@@ -38,7 +38,7 @@ struct ValidationView: View {
                     Text(String(format: "收音平均 %.1f dBFS · 峰值 %.1f dBFS", controller.inputRMSDBFS, controller.inputPeakDBFS)).font(.caption)
                     if !controller.warning.isEmpty { Text(controller.warning).foregroundStyle(.red).textSelection(.enabled).accessibilityIdentifier("system-warning") }
                     if let session = controller.session {
-                        Button("补翻译 / 重试") { Task { await controller.retryTranslations(session) } }
+                        Button("补翻译 / 重试") { Task { await controller.retryTranslations(session) } }.disabled(controller.busy)
                         Button("取消翻译请求") { controller.cancelTranslations() }
                     }
                 }
@@ -115,18 +115,21 @@ private struct SettingsView: View {
 
 private struct SessionView: View {
     @EnvironmentObject private var controller: LectureController
-    let session: LectureSession
+    @State private var session: LectureSession
     @State private var segments: [TranscriptSegment] = []
     @State private var page = 0
     @State private var language = ExportLanguage.bilingual
     @State private var markdown = false
     @State private var exportURL: URL?
     @State private var diagnosticsURL: URL?
+    @State private var m4aURL: URL?
+    @State private var exportingAudio = false
     @State private var error = ""
     @State private var player: AVAudioPlayer?
     @State private var playing = false
     @State private var audioIndex = 0
     @State private var playbackDelegate: PlaybackDelegate?
+    init(session: LectureSession) { _session = State(initialValue: session) }
     var body: some View {
         List {
             Section("本地录音") {
@@ -136,7 +139,14 @@ private struct SessionView: View {
                         player?.stop(); player = nil; playing = false; audioIndex = index
                     })) { ForEach(Array(session.audioFiles.enumerated()), id: \.offset) { index, name in Text(name).tag(index) } }
                     Button(playing ? "暂停回放" : "播放（自动续播下一段）") { togglePlayback() }.disabled(controller.active)
-                    ShareLink(item: controller.store.folder(session.id).appendingPathComponent(session.audioFiles[min(audioIndex, session.audioFiles.count - 1)])) { Text("导出此音频片段") }
+                    ShareLink(item: controller.store.folder(session.id).appendingPathComponent(session.audioFiles[min(audioIndex, session.audioFiles.count - 1)])) { Text("导出此 CAF 片段") }.disabled(controller.active || controller.busy)
+                    Button("生成整堂 M4A（保留暂停空档）") { Task {
+                        exportingAudio = true; defer { exportingAudio = false }
+                        do { m4aURL = try await controller.exportAudio(session) }
+                        catch { self.error = error.localizedDescription }
+                    } }.disabled(controller.active || controller.busy || exportingAudio)
+                    if exportingAudio { ProgressView("正在导出音频…") }
+                    if let m4aURL { ShareLink(item: m4aURL) { Text("分享整堂 M4A") } }
                 }
                 Text("全部音频和原始数据可通过 Windows iTunes 文件共享保存 William Lecture 的 Sessions 文件夹。").font(.caption)
             }
@@ -145,14 +155,13 @@ private struct SessionView: View {
                 Toggle("Markdown（关闭为 UTF-8 TXT）", isOn: $markdown)
                 Button("生成导出") { Task {
                     do {
-                        exportURL = try await controller.store.export(session.id, language: language, markdown: markdown)
-                        let diagnostic = controller.store.folder(session.id).appendingPathComponent("diagnostics.jsonl")
-                        if FileManager.default.fileExists(atPath: diagnostic.path) { diagnosticsURL = diagnostic }
+                        (exportURL, diagnosticsURL) = try await controller.exportText(session, language: language, markdown: markdown)
                     } catch { self.error = error.localizedDescription }
-                } }
+                } }.disabled(controller.active || controller.busy)
                 if let exportURL { ShareLink(item: exportURL) { Text("分享文字稿") } }
                 if let diagnosticsURL { ShareLink(item: diagnosticsURL) { Text("分享 diagnostics.jsonl") } }
-                Button("补翻译 / 重试") { Task { await controller.retryTranslations(session); await load() } }
+                Text("文字与诊断为导出时的快照；待翻译内容会明确标记。补翻译完成后可再次生成。").font(.caption)
+                Button("补翻译 / 重试") { Task { await controller.retryTranslations(session); await load() } }.disabled(controller.busy)
                 Button("刷新文字稿") { Task { await load() } }
                 if !error.isEmpty { Text(error).foregroundStyle(.red) }
             }
@@ -166,9 +175,15 @@ private struct SessionView: View {
             }
         }.navigationTitle(session.course).task { await load() }
             .onDisappear { player?.stop(); player = nil; playing = false }
+            .onChange(of: controller.active) { _, active in if active { player?.stop(); player = nil; playing = false } }
     }
     private func load() async {
-        do { segments = try await controller.store.segments(session.id) } catch { self.error = error.localizedDescription }
+        do {
+            if let saved = try await controller.store.sessions().first(where: { $0.id == session.id }) { session = saved }
+            audioIndex = min(audioIndex, max(0, session.audioFiles.count - 1))
+            segments = try await controller.store.segments(session.id)
+            page = min(page, max(0, (segments.count - 1) / 50))
+        } catch { self.error = error.localizedDescription }
     }
     private func togglePlayback() {
         if playing { player?.pause(); playing = false; return }
@@ -176,6 +191,7 @@ private struct SessionView: View {
         playChunk()
     }
     private func playChunk() {
+        guard !controller.active, audioIndex < session.audioFiles.count else { player?.stop(); playing = false; return }
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
             try AVAudioSession.sharedInstance().setActive(true)
@@ -187,7 +203,7 @@ private struct SessionView: View {
                 }
             }
             playbackDelegate = delegate; next.delegate = delegate; player = next; playing = next.play()
-        } catch { self.error = error.localizedDescription; playing = false }
+        } catch { self.error = error.localizedDescription; player?.stop(); player = nil; playing = false }
     }
 }
 
@@ -195,4 +211,5 @@ private final class PlaybackDelegate: NSObject, AVAudioPlayerDelegate {
     let ended: (Bool) -> Void
     init(ended: @escaping (Bool) -> Void) { self.ended = ended }
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { ended(flag) }
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) { ended(false) }
 }

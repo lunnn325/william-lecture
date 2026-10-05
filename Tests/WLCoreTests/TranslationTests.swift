@@ -147,6 +147,61 @@ final class TranslationTests: XCTestCase {
         XCTAssertEqual(records[0].attempts, 3); XCTAssertEqual(records[0].status, .completed)
     }
 
+    @MainActor func testNetworkRestoreResumesExhaustedTransientFailure() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(root: root); let session = LectureSession(course: "Network restore")
+        try await store.save(session); let input = segments(1)
+        try await store.append(input[0], session: session.id)
+        let probe = TranslationProbe(error: APIError(status: 500, retryAfter: 0), errorsBeforeSuccess: 3)
+        let worker = TranslationWorker(store: store, config: config, session: session,
+            operation: { segment, delta in try await probe.translate(segment, delta: delta) })
+        let paused = expectation(description: "Three attempts exhausted")
+        let done = expectation(description: "Restored network completes backlog")
+        worker.onUpdate = { segment in
+            if segment.status == .pending && segment.error != nil { paused.fulfill() }
+            if segment.status == .completed { done.fulfill() }
+        }
+        worker.kick(); await fulfillment(of: [paused], timeout: 3)
+        worker.networkRestored(); await fulfillment(of: [done], timeout: 3); await worker.waitForCancellation()
+        let observed = await probe.snapshot(); XCTAssertEqual(observed.counts[input[0].id], 4)
+        let pending = try await store.pending(session.id); XCTAssertTrue(pending.isEmpty)
+    }
+
+    @MainActor func testNetworkRestoreDoesNotUndoManualCancellation() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(root: root); let session = LectureSession(course: "Manual cancel")
+        try await store.save(session); let input = segments(1)
+        try await store.append(input[0], session: session.id)
+        let probe = TranslationProbe(delays: [input[0].id: 10000])
+        let worker = TranslationWorker(store: store, config: config, session: session,
+            operation: { segment, delta in try await probe.translate(segment, delta: delta) })
+        let partial = expectation(description: "Request started")
+        worker.onUpdate = { if $0.chinese != nil { partial.fulfill() } }
+        worker.kick(); await fulfillment(of: [partial], timeout: 2)
+        await worker.waitForCancellation(); worker.networkRestored()
+        await Task.yield()
+        XCTAssertEqual(worker.resourceCounts.requests, 0)
+        let observed = await probe.snapshot(); XCTAssertEqual(observed.starts.count, 1)
+    }
+
+    @MainActor func testTransportTimeoutRetriesAndPreservesEnglish() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(root: root); let session = LectureSession(course: "Timeout")
+        try await store.save(session); let input = segments(1)
+        try await store.append(input[0], session: session.id)
+        let attempts = TimeoutAttemptCounter()
+        let worker = TranslationWorker(store: store, config: config, session: session, operation: { segment, delta in
+            if await attempts.next() == 1 { throw URLError(.timedOut) }
+            await delta("恢复成功"); return "恢复成功"
+        })
+        let done = expectation(description: "Timed out request retried")
+        worker.onUpdate = { if $0.status == .completed { done.fulfill() } }
+        worker.kick(); await fulfillment(of: [done], timeout: 5); await worker.waitForCancellation()
+        let records = try await store.segments(session.id)
+        XCTAssertEqual(records[0].attempts, 2); XCTAssertEqual(records[0].english, input[0].english)
+        XCTAssertEqual(records[0].chinese, "恢复成功")
+    }
+
     func testPendingIndexTracksWritesExcludesInFlightAndRebuildsAfterSwitch() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let store = SessionStore(root: root); let one = LectureSession(course: "One"), two = LectureSession(course: "Two")
@@ -190,4 +245,9 @@ final class TranslationTests: XCTestCase {
         let old = try decoder.decode(TranscriptSegment.self, from: JSONSerialization.data(withJSONObject: object))
         XCTAssertNil(old.queuedAt); XCTAssertEqual(old.english, "Sentence 0.")
     }
+}
+
+private actor TimeoutAttemptCounter {
+    private var count = 0
+    func next() -> Int { count += 1; return count }
 }

@@ -13,8 +13,10 @@ enum Keychain {
     }
     static func save(_ key: String) throws {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "api-key"]
-        SecItemDelete(query as CFDictionary)
-        guard !key.isEmpty else { return }
+        if key.isEmpty { SecItemDelete(query as CFDictionary); return }
+        let updated = SecItemUpdate(query as CFDictionary, [kSecValueData as String: Data(key.utf8)] as CFDictionary)
+        if updated == errSecSuccess { return }
+        guard updated == errSecItemNotFound else { throw WLFailure.message("无法更新 API Key；原 Key 保留") }
         var item = query
         item[kSecValueData as String] = Data(key.utf8)
         item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly

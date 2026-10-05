@@ -149,14 +149,19 @@ private final class SpeechInputBridge: @unchecked Sendable {
         await bridge.finish()
         if let analyzer {
             do {
-                try await withThrowingTaskGroup(of: Void.self) { group in
-                    group.addTask { try await analyzer.finalizeAndFinishThroughEndOfInput() }
-                    group.addTask { try await Task.sleep(for: .seconds(8)); await analyzer.cancelAndFinishNow(); throw WLFailure.message("Speech finalization timeout; unfinished words retained in audio") }
-                    _ = try await group.next(); group.cancelAll()
+                try await AsyncDeadline.run(seconds: 8) {
+                    try await analyzer.finalizeAndFinishThroughEndOfInput()
                 }
-            } catch { onEvent?(.error(SpeechErrorDetails.describe(error))); await analyzer.cancelAndFinishNow() }
+            } catch {
+                onEvent?(.error(SpeechErrorDetails.describe(error)))
+                resultsTask?.cancel()
+                Task { await analyzer.cancelAndFinishNow() }
+            }
         }
-        if let resultsTask { await resultsTask.value }
+        if let resultsTask {
+            do { try await AsyncDeadline.run(seconds: 1) { await resultsTask.value } }
+            catch { resultsTask.cancel(); onEvent?(.error("Speech 结果未能及时结束；原始音频已保存")) }
+        }
         self.resultsTask = nil; analyzer = nil
     }
 }

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-swift test
-xcodegen generate
 mkdir -p build dist
+node scripts/check-secrets.mjs
+swift test 2>&1 | tee build/swift-test.log
+xcodegen generate
 xcodebuild -project WilliamLecture.xcodeproj -scheme WilliamLecture \
   -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
   -derivedDataPath build -resultBundlePath build/Validation.xcresult \

@@ -2,6 +2,7 @@ name: iOS Validation IPA
 on:
   push:
     branches: [main, master, 'codex/**']
+    paths-ignore: ['docs/**', 'README.md']
   pull_request:
   workflow_dispatch:
 permissions:
@@ -43,6 +44,7 @@ jobs:
         with:
           name: build-diagnostics
           path: |
+            build/swift-test.log
             build/xcodebuild.log
             build/Validation.xcresult
             build/first-launch.log
