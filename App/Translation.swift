@@ -88,20 +88,23 @@ enum Translator {
     var onState: ((String) -> Void)?
     private var task: Task<Void, Never>?
     private var suspended = false
+    private var wakeRequested = false
     private let store: SessionStore
     private let config: TranslatorConfiguration
     private let session: LectureSession
     init(store: SessionStore, config: TranslatorConfiguration, session: LectureSession) { self.store = store; self.config = config; self.session = session }
     func kick(force: Bool = false) {
         if force { suspended = false }
-        guard task == nil, !suspended else { return }
+        guard !suspended else { return }
+        if task != nil { wakeRequested = true; return }
         task = Task { [weak self] in
             guard let self else { return }
             await self.run(); self.task = nil
+            if self.wakeRequested { self.wakeRequested = false; self.kick() }
         }
     }
-    func cancel() { task?.cancel() }
-    func waitForCancellation() async { task?.cancel(); if let task { await task.value } }
+    func cancel() { suspended = true; wakeRequested = false; task?.cancel() }
+    func waitForCancellation() async { cancel(); if let task { await task.value } }
     private func run() async {
         do {
             while !Task.isCancelled {

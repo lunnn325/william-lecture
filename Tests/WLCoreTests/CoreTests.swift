@@ -48,12 +48,12 @@ final class CoreTests: XCTestCase {
     }
     func testPersistedUpdatesRecoverOneRecordAndPendingWork() async throws {
         let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
-        let store = try SessionStore(root: directory)
+        let store = SessionStore(root: directory)
         let session = LectureSession(course: "ECON1111"); try await store.save(session)
         var segment = TranscriptSegment(start: 0, end: 3, english: "Tax is 12.5%.")
         try await store.append(segment, session: session.id)
         segment.submittedAt = Date(); segment.attempts = 1; try await store.append(segment, session: session.id)
-        let reopened = try SessionStore(root: directory)
+        let reopened = SessionStore(root: directory)
         let pending = try await reopened.pending(session.id)
         XCTAssertEqual(pending.count, 1); XCTAssertEqual(pending[0].attempts, 1)
         segment.chinese = "税率为 12.5%。"; segment.status = .completed; try await reopened.append(segment, session: session.id)
@@ -63,7 +63,7 @@ final class CoreTests: XCTestCase {
     }
     func testProcessRecoveryPreservesUnbatchedFinalWordsAndAudioNames() async throws {
         let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
-        let store = try SessionStore(root: directory)
+        let store = SessionStore(root: directory)
         let session = LectureSession(course: "FINN"); try await store.save(session)
         try Data().write(to: store.folder(session.id).appendingPathComponent("audio-00000.caf"))
         try await store.appendFinal(SpeechPiece(text: "incomplete sentence", start: 0, end: 2), session: session.id)
@@ -75,7 +75,7 @@ final class CoreTests: XCTestCase {
     }
     func testExportLanguagesNumbersMissingContentAndMockLabels() async throws {
         let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
-        let store = try SessionStore(root: directory); let session = LectureSession(course: "经济学"); try await store.save(session)
+        let store = SessionStore(root: directory); let session = LectureSession(course: "经济学"); try await store.save(session)
         var complete = TranscriptSegment(start: 1, end: 2, english: "12.5% Pigouvian tax.")
         complete.chinese = "12.5% 庇古税。"; complete.status = .completed; try await store.append(complete, session: session.id)
         var mock = TranscriptSegment(start: 3, end: 4, english: "Mock example."); mock.chinese = "模拟"; mock.status = .mock; try await store.append(mock, session: session.id)

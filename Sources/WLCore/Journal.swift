@@ -56,9 +56,8 @@ public enum JSONLines {
 
 public actor SessionStore {
     public nonisolated let root: URL
-    public init(root: URL) throws {
+    public init(root: URL) {
         self.root = root
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
     public nonisolated func folder(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString, isDirectory: true) }
     public func save(_ session: LectureSession) throws {
@@ -71,6 +70,7 @@ public actor SessionStore {
         #endif
     }
     public func sessions() throws -> [LectureSession] {
+        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
         return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             .compactMap { directory in

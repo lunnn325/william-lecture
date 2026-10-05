@@ -39,9 +39,7 @@ import WLCore
 
     init() {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        // Documents exists on iOS; failures are shown through the controller's operations.
-        do { store = try SessionStore(root: documents.appendingPathComponent("Sessions", isDirectory: true)) }
-        catch { fatalError("Cannot open session directory: \(error.localizedDescription)") }
+        store = SessionStore(root: documents.appendingPathComponent("Sessions", isDirectory: true))
         Task { do { try await store.recover(); await refreshHistory() } catch { warning = error.localizedDescription } }
         network.pathUpdateHandler = { [weak self] path in Task { @MainActor in
             guard let self else { return }
@@ -186,7 +184,10 @@ import WLCore
     private func makeWorker(_ session: LectureSession) {
         let config = TranslatorConfiguration(mock: mode == .mock, model: model, key: Keychain.load())
         let worker = TranslationWorker(store: store, config: config, session: session)
-        worker.onUpdate = { [weak self] segment in self?.updateVisible(segment) }
+        worker.onUpdate = { [weak self] segment in
+            guard self?.session?.id == session.id else { return }
+            self?.updateVisible(segment)
+        }
         worker.onState = { [weak self] state in self?.translationStatus = state }
         self.worker = worker
     }
@@ -241,7 +242,7 @@ import WLCore
         guard !active || selected.id == session?.id else { warning = "录音期间只能补当前课堂"; return }
         await worker?.waitForCancellation()
         do {
-            for var segment in try await store.segments(selected.id) where segment.status == .failed {
+            for var segment in try await store.segments(selected.id) where segment.status == .failed || (mode == .openAI && segment.status == .mock) {
                 segment.status = .pending; segment.error = nil; try await store.append(segment, session: selected.id)
             }
             makeWorker(selected); worker?.kick()

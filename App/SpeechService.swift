@@ -46,7 +46,7 @@ private final class SpeechInputBridge: @unchecked Sendable {
         }
     }
     func finish() async {
-        lock.lock(); let sink = continuation; continuation = nil; target = nil; lock.unlock()
+        let sink = lock.withLock { let sink = continuation; continuation = nil; target = nil; return sink }
         await withCheckedContinuation { done in queue.async { self.converter = nil; sink?.finish(); done.resume() } }
     }
 }
@@ -109,7 +109,7 @@ private final class SpeechInputBridge: @unchecked Sendable {
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream(bufferingPolicy: .bufferingNewest(96))
         let analyzer = SpeechAnalyzer(modules: modules)
         try await analyzer.start(inputSequence: stream)
-        try Task.checkCancellation()
+        if Task.isCancelled { continuation.finish(); await analyzer.cancelAndFinishNow(); throw CancellationError() }
         self.analyzer = analyzer; bridge.attach(continuation, format: format)
     }
     private func emit(text: String, range: CMTimeRange, final: Bool) {

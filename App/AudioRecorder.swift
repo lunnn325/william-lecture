@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import Darwin
 import WLCore
 
 struct AudioPacket: @unchecked Sendable {
@@ -14,8 +15,17 @@ final class AudioRecorder: @unchecked Sendable {
         case interrupted(Double, Bool), recoveryRequested, routeChanged, failure(String, Double)
         case meter(Double, Double, UInt64)
     }
-    var onEvent: (@Sendable (Event) -> Void)?
-    var onPacket: (@Sendable (AudioPacket) -> Void)?
+    private let callbackLock = NSLock()
+    private var eventCallback: (@Sendable (Event) -> Void)?
+    private var packetCallback: (@Sendable (AudioPacket) -> Void)?
+    var onEvent: (@Sendable (Event) -> Void)? {
+        get { callbackLock.withLock { eventCallback } }
+        set { callbackLock.withLock { eventCallback = newValue } }
+    }
+    var onPacket: (@Sendable (AudioPacket) -> Void)? {
+        get { callbackLock.withLock { packetCallback } }
+        set { callbackLock.withLock { packetCallback = newValue } }
+    }
     private let queue = DispatchQueue(label: "WL.audio.disk", qos: .userInitiated)
     private let slots = DispatchSemaphore(value: 96)
     private var engine = AVAudioEngine()
@@ -127,6 +137,9 @@ final class AudioRecorder: @unchecked Sendable {
             AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false]
         file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: format.commonFormat, interleaved: format.isInterleaved)
         try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
+        var resourceURL = url
+        var resourceValues = URLResourceValues(); resourceValues.isExcludedFromBackup = true
+        try resourceURL.setResourceValues(resourceValues)
         chunkStart = offset
         try JSONLines.append(Diagnostic("audio_chunk_open", offset: offset, fields: ["file": name, "sample_rate": "\(format.sampleRate)", "channels": "\(format.channelCount)"]), to: directory.appendingPathComponent("audio-index.jsonl"))
         onEvent?(.chunk(name, offset))
