@@ -94,8 +94,9 @@ private final class SpeechInputBridge: @unchecked Sendable {
     }
     private func install(modules: [any SpeechModule], locale: Locale) async throws {
         try Task.checkCancellation()
-        let reserved = try await AssetInventory.reserve(locale: locale)
-        guard reserved else { throw WLFailure.message("无法预留英文模型；请在系统设置检查语音模型") }
+        // false means already reserved, which is expected on resume or the next lecture.
+        // Unsupported assets / exceeding the reservation limit throw instead.
+        _ = try await AssetInventory.reserve(locale: locale)
         let status = await AssetInventory.status(forModules: modules)
         onEvent?(.status("英文模型：\(String(describing: status))"))
         if let request = try await AssetInventory.assetInstallationRequest(supporting: modules) {
