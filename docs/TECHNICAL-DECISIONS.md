@@ -1,5 +1,7 @@
 # V0 技术决定
 
+当前版本为 0.0.5；任务隔离、停止收尾、恢复与导出的最新行为及验证边界见 [V0 Hardening 报告](NIGHTLY_HARDENING_REPORT.md)。下文保留各版本决定的背景。
+
 ## 一个麦克风入口，独立消费者
 
 0.0.3：录音和回放都显式使用 default 模式。此前 measurement 会减少系统动态处理，回放只改变 category 又保留了 measurement，可能导致偏低音量。此处没有给原音频加数字增益；收音电平按全秒、所有通道统计 RMS、peak dBFS 和削波比例，并记录实际 input route、mode、格式与设备 input gain。CAF 编码通过实际写入/读取音调测试验证幅度，真机远场音量仍须比较。[Apple measurement 说明](https://developer.apple.com/documentation/avfaudio/avaudiosession/mode-swift.struct/measurement)
