@@ -18,6 +18,7 @@ const report = {
   partial_english_after_range_end: stats('speech_partial', 'end_to_receipt_ms'),
   stable_english_after_range_end: stats('speech_finalized', 'end_to_receipt_ms'),
   buffer_after_final_receipt: stats('buffer_emit', 'english_final_to_emit_ms'),
+  translation_queue_after_buffer: stats('translation_request', 'queue_ms', true),
   first_chinese_after_speech_end: stats('translation_first_result', 'speech_end_to_first_ms', true),
   stable_chinese_after_speech_end: stats('translation_completed', 'speech_end_to_complete_ms', true),
   gpt_request_to_first: stats('translation_first_result', 'request_ms', true),

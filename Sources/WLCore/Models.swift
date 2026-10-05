@@ -26,6 +26,8 @@ public struct TranscriptSegment: Codable, Identifiable, Sendable, Equatable {
     public var chinese: String?
     public var status: TranslationStatus
     public var receivedAt: Date
+    /// Buffer emission time; optional so existing on-device journals remain readable.
+    public var queuedAt: Date?
     public var submittedAt: Date?
     public var firstTranslationAt: Date?
     public var completedAt: Date?
@@ -54,8 +56,10 @@ public struct SentenceBuffer: Sendable {
     private var lastRangeEnd: Double = -1
     public let maxWords: Int
     public let quietSeconds: Double
-    public init(maxWords: Int = 28, quietSeconds: Double = 0.8) {
-        self.maxWords = maxWords; self.quietSeconds = quietSeconds
+    public let maxAudioSeconds: Double
+    public var quietDeadline: Date? { pieces.last?.receivedAt.addingTimeInterval(quietSeconds) }
+    public init(maxWords: Int = 20, quietSeconds: Double = 0.35, maxAudioSeconds: Double = 4.5) {
+        self.maxWords = maxWords; self.quietSeconds = quietSeconds; self.maxAudioSeconds = maxAudioSeconds
     }
     public mutating func append(_ piece: SpeechPiece) -> TranscriptSegment? {
         guard !piece.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -64,6 +68,7 @@ public struct SentenceBuffer: Sendable {
         pieces.append(piece)
         let text = pieces.map(\.text).joined(separator: " ")
         if text.split(whereSeparator: { $0.isWhitespace }).count >= maxWords ||
+            piece.end - (pieces.first?.start ?? piece.start) >= maxAudioSeconds ||
             ".!?。！？".contains(text.last ?? " ") { return flush() }
         return nil
     }

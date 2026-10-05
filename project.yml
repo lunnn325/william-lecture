@@ -21,8 +21,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.williamlecture.validation
         PRODUCT_NAME: WilliamLecture
-        MARKETING_VERSION: 0.0.3
-        CURRENT_PROJECT_VERSION: 3
+        MARKETING_VERSION: 0.0.4
+        CURRENT_PROJECT_VERSION: 4
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_FILE: App/Info.plist

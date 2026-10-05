@@ -55,6 +55,9 @@ public enum JSONLines {
 }
 
 public actor SessionStore {
+    // Cache unresolved text for one active queue only. Journals remain authoritative on reopen.
+    private var pendingSession: UUID?
+    private var pendingIndex: [UUID: TranscriptSegment] = [:]
     public nonisolated let root: URL
     public init(root: URL) {
         self.root = root
@@ -93,6 +96,10 @@ public actor SessionStore {
     }
     public func append(_ segment: TranscriptSegment, session: UUID) throws {
         try JSONLines.append(segment, to: folder(session).appendingPathComponent("transcript.jsonl"))
+        if pendingSession == session {
+            if segment.status == .pending || segment.status == .failed { pendingIndex[segment.id] = segment }
+            else { pendingIndex.removeValue(forKey: segment.id) }
+        }
     }
     public func log(_ diagnostic: Diagnostic, session: UUID) throws {
         try JSONLines.append(diagnostic, to: folder(session).appendingPathComponent("diagnostics.jsonl"))
@@ -105,8 +112,23 @@ public actor SessionStore {
         try JSONLines.scan(TranscriptSegment.self, at: folder(id).appendingPathComponent("transcript.jsonl")) { records[$0.id] = $0 }
         return records.values.sorted { $0.start < $1.start }
     }
-    public func pending(_ id: UUID, limit: Int = 16, retryFailed: Bool = false) throws -> [TranscriptSegment] {
-        Array(try segments(id).filter { $0.status == .pending || (retryFailed && $0.status == .failed) }.prefix(limit))
+    public func pending(_ id: UUID, limit: Int = 16, retryFailed: Bool = false,
+                        excluding: Set<UUID> = [], newestFirst: Bool = false) throws -> [TranscriptSegment] {
+        if pendingSession != id {
+            var index: [UUID: TranscriptSegment] = [:]
+            try JSONLines.scan(TranscriptSegment.self, at: folder(id).appendingPathComponent("transcript.jsonl")) {
+                if $0.status == .pending || $0.status == .failed { index[$0.id] = $0 }
+                else { index.removeValue(forKey: $0.id) }
+            }
+            pendingIndex = index; pendingSession = id
+        }
+        let candidates = pendingIndex.values.filter {
+            !excluding.contains($0.id) && ($0.status == .pending || (retryFailed && $0.status == .failed))
+        }.sorted { lhs, rhs in
+            if lhs.start == rhs.start { return lhs.id.uuidString < rhs.id.uuidString }
+            return newestFirst ? lhs.start > rhs.start : lhs.start < rhs.start
+        }
+        return Array(candidates.prefix(max(0, limit)))
     }
     public func recover() throws {
         for var session in try sessions() where [.recording, .paused, .interrupted].contains(session.state) {
@@ -118,7 +140,7 @@ public actor SessionStore {
             var buffer = SentenceBuffer()
             try JSONLines.scan(SpeechPiece.self, at: folder(session.id).appendingPathComponent("speech-final.jsonl")) { piece in
                 if piece.end > lastEnd + 0.001, let segment = buffer.append(piece) {
-                    try JSONLines.append(segment, to: folder(session.id).appendingPathComponent("transcript.jsonl"))
+                    try append(segment, session: session.id)
                 }
             }
             if let tail = buffer.flush() { try append(tail, session: session.id) }

@@ -31,6 +31,7 @@ import WLAppleAudio
     private var speechPreparation: Task<Void, Never>?
     private var worker: TranslationWorker?
     private var buffer = SentenceBuffer()
+    private var bufferFlush: Task<Void, Never>?
     private var timer: Task<Void, Never>?
     private var persistence: Task<Void, Never>?
     private var interrupted = false
@@ -130,7 +131,6 @@ import WLAppleAudio
                 guard !Task.isCancelled, let self, let session = self.session else { return }
                 self.elapsed = Date().timeIntervalSince(session.startedAt)
                 self.session?.duration = self.elapsed
-                if let segment = self.buffer.flushIfQuiet(now: Date()) { self.persistSegment(segment) }
             }
         }
     }
@@ -187,19 +187,36 @@ import WLAppleAudio
                 enqueue { try await self.store.appendFinal(piece, session: session.id) }
                 log("speech_finalized", offset: piece.end, fields: ["range_start": "\(piece.start)", "range_end": "\(piece.end)", "end_to_receipt_ms": "\(Int(piece.receivedAt.timeIntervalSince(session.startedAt.addingTimeInterval(piece.end)) * 1000))"])
                 if let segment = buffer.append(piece) { persistSegment(segment) }
+                scheduleBufferFlush()
             }
         }
     }
     private func persistSegment(_ segment: TranscriptSegment) {
         guard let id = session?.id else { return }
+        var segment = segment
+        segment.queuedAt = Date()
+        let emittedAt = segment.queuedAt!
         updateVisible(segment)
         enqueue {
             try await self.store.append(segment, session: id)
-            try await self.store.log(Diagnostic("buffer_emit", offset: segment.end, fields: ["segment": segment.id.uuidString, "english_final_to_emit_ms": "\(Int(Date().timeIntervalSince(segment.receivedAt) * 1000))"]), session: id)
             self.worker?.kick()
+            try await self.store.log(Diagnostic("buffer_emit", offset: segment.end, fields: ["segment": segment.id.uuidString, "english_final_to_emit_ms": "\(Int(emittedAt.timeIntervalSince(segment.receivedAt) * 1000))"], at: emittedAt), session: id)
         }
     }
-    private func flushBuffer() { if let segment = buffer.flush() { persistSegment(segment) } }
+    private func scheduleBufferFlush() {
+        bufferFlush?.cancel(); bufferFlush = nil
+        guard let deadline = buffer.quietDeadline else { return }
+        bufferFlush = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow))) }
+            catch { return }
+            guard !Task.isCancelled, let self else { return }
+            if let segment = self.buffer.flushIfQuiet(now: Date()) { self.persistSegment(segment) }
+        }
+    }
+    private func flushBuffer() {
+        bufferFlush?.cancel(); bufferFlush = nil
+        if let segment = buffer.flush() { persistSegment(segment) }
+    }
     private func makeWorker(_ session: LectureSession) {
         let config = TranslatorConfiguration(mock: mode == .mock, model: model, key: Keychain.load())
         let worker = TranslationWorker(store: store, config: config, session: session)

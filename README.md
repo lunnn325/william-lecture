@@ -60,7 +60,9 @@ IPA 尚未签名，无法直接点开安装；Sideloadly 在电脑上完成个�
 node scripts/analyze-diagnostics.mjs "C:\path\diagnostics.jsonl"
 ```
 
-报告区分英文首次结果、partial、final、缓冲、中文首段流式输出和完成，给出 p50/p95；mock 排除在 GPT 指标之外。数值依据 Apple 音频范围和本机接收时间，尚不是与教师参考录音对齐的客观词级延迟。不要先承诺 1–2 秒。
+报告区分英文首次结果、partial、final、缓冲、翻译队列、中文首段流式输出和完成，给出 p50/p95；mock 排除在 GPT 指标之外。数值依据 Apple 音频范围和本机接收时间，尚不是与教师参考录音对齐的客观词级延迟。不要先承诺 1–2 秒。
+
+0.0.4 缩短已定稿英文的额外缓冲等待，最多同时翻译两段，复用网络连接，并让首段中文先显示再写诊断。旧课堂和设备上已有的设置/Keychain 可继续使用。比较版本时保留同一音源、模型和网络，导出 diagnostics 查看 `buffer_after_final_receipt`、`translation_queue_after_buffer`、`gpt_request_to_first`，再判断等待主要发生在哪里。
 
 ## 构建与结构
 
@@ -72,4 +74,4 @@ Windows 修改后提交即可触发 CI。CI 使用 `macos-26`、Xcode 26.5、Xco
 bash scripts/build-ios.sh
 ```
 
-`WLCore`：纯 Foundation 模型、final 意群缓冲、JSONL 恢复、导出和 SSE；`WLAppleAudio`：可在 macOS XCTest 验证的 PCM 重采样、时间轴、录音电平和 CAF 写入；`App`：音频、Speech、独立翻译 worker、Keychain、最小 SwiftUI。重要决定与当前限制在 [技术决定](docs/TECHNICAL-DECISIONS.md)。
+`WLCore`：Foundation 模型、final 意群缓冲、JSONL 恢复、导出、SSE 及可注入测试传输的独立翻译 worker；`WLAppleAudio`：可在 macOS XCTest 验证的 PCM 重采样、时间轴、录音电平和 CAF 写入；`App`：音频、Speech、Keychain、最小 SwiftUI。重要决定与当前限制在 [技术决定](docs/TECHNICAL-DECISIONS.md)。
