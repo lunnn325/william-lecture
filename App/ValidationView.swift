@@ -127,7 +127,9 @@ private struct SessionView: View {
             Section("本地录音") {
                 Text("\(session.audioFiles.count) 个独立音频片段 · \(SessionStore.timestamp(session.duration))")
                 if !session.audioFiles.isEmpty {
-                    Picker("片段", selection: $audioIndex) { ForEach(Array(session.audioFiles.enumerated()), id: \.offset) { index, name in Text(name).tag(index) } }
+                    Picker("片段", selection: Binding(get: { audioIndex }, set: { index in
+                        player?.stop(); player = nil; playing = false; audioIndex = index
+                    })) { ForEach(Array(session.audioFiles.enumerated()), id: \.offset) { index, name in Text(name).tag(index) } }
                     Button(playing ? "暂停回放" : "播放（自动续播下一段）") { togglePlayback() }.disabled(controller.active)
                     ShareLink(item: controller.store.folder(session.id).appendingPathComponent(session.audioFiles[min(audioIndex, session.audioFiles.count - 1)])) { Text("导出此音频片段") }
                 }

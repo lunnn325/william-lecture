@@ -36,6 +36,8 @@ import WLCore
     private let network = NWPathMonitor()
     private var wasOffline = false
     private var seenSpeechResult = false
+    private var interruptionTask: Task<Void, Never>?
+    private var wantsRecovery = false
 
     init() {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -68,7 +70,7 @@ import WLCore
             try await store.save(next)
             let folder = store.folder(next.id)
             try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: folder.path)
-            session = next; visible = []; buffer = SentenceBuffer(); elapsed = 0; currentChinese = ""; volatileEnglish = ""; warning = ""; newestDisplayEnd = -1; interrupted = false
+            session = next; visible = []; buffer = SentenceBuffer(); elapsed = 0; currentChinese = ""; volatileEnglish = ""; warning = ""; newestDisplayEnd = -1; interrupted = false; wantsRecovery = false
             let recorder = AudioRecorder(); self.recorder = recorder
             recorder.onEvent = { [weak self] event in Task { @MainActor in self?.handleAudio(event) } }
             try await recorder.start(directory: folder, origin: next.startedAt)
@@ -208,23 +210,37 @@ import WLCore
             log("audio_chunk", offset: offset, fields: ["file": name])
         case .paused: break
         case .stopped: break
-        case .meter(let offset, let peak, let memory):
+        case .meter(let offset, let peak, let memory, let capturedSeconds):
             self.peak = peak; elapsed = offset
             let audio = store.folder(session.id)
             let size = session.audioFiles.reduce(UInt64(0)) { sum, file in sum + (((try? FileManager.default.attributesOfItem(atPath: audio.appendingPathComponent(file).path)[.size]) as? NSNumber)?.uint64Value ?? 0) }
-            log("health", offset: offset, fields: ["resident_bytes": "\(memory)", "audio_bytes": "\(size)", "peak": "\(peak)"])
+            log("health", offset: offset, fields: ["resident_bytes": "\(memory)", "audio_bytes": "\(size)", "captured_seconds": "\(capturedSeconds)", "peak": "\(peak)"])
         case .interrupted(let offset, _):
             interrupted = true; self.session?.state = .interrupted; audioStatus = "系统中断；已保存音频"
             log("interruption", offset: offset, gap: "系统中断期间未采集音频")
-            Task { await finishSpeech(); flushBuffer(); if let snapshot = self.session { try? await store.save(snapshot) } }
+            settleInterruption()
         case .recoveryRequested:
             log("recovery_requested")
-            if interrupted && !busy { Task { await pauseOrResume() } }
+            wantsRecovery = true
+            if interrupted && !busy && interruptionTask == nil { Task { wantsRecovery = false; await pauseOrResume() } }
         case .routeChanged: log("audio_route_change", fields: ["route": AVAudioSession.sharedInstance().currentRoute.description])
         case .failure(let message, let offset):
             warning = "录音故障：\(message)"; audioStatus = "录音已停止，需要处理"; self.session?.state = .interrupted; interrupted = false
             log("audio_error", offset: offset, fields: ["error": message], gap: "录音写盘失败，后续音频未采集")
-            Task { await finishSpeech(); flushBuffer(); if let snapshot = self.session { try? await store.save(snapshot) } }
+            settleInterruption()
+        }
+    }
+    private func settleInterruption() {
+        guard interruptionTask == nil else { return }
+        interruptionTask = Task {
+            // Serialize against a user pause/stop/start already in progress.
+            while busy && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
+            guard active else { interruptionTask = nil; return }
+            busy = true
+            await finishSpeech(); flushBuffer(); await persistence?.value
+            if let snapshot = self.session { try? await store.save(snapshot) }
+            busy = false; interruptionTask = nil
+            if wantsRecovery && interrupted { wantsRecovery = false; await pauseOrResume() }
         }
     }
     private func enqueue(_ action: @escaping @MainActor () async throws -> Void) {

@@ -13,7 +13,7 @@ final class AudioRecorder: @unchecked Sendable {
     enum Event: Sendable {
         case started(Double), chunk(String, Double), paused(Double), stopped(Double)
         case interrupted(Double, Bool), recoveryRequested, routeChanged, failure(String, Double)
-        case meter(Double, Double, UInt64)
+        case meter(Double, Double, UInt64, Double)
     }
     private let callbackLock = NSLock()
     private var eventCallback: (@Sendable (Event) -> Void)?
@@ -38,6 +38,7 @@ final class AudioRecorder: @unchecked Sendable {
     private var chunkStart = 0.0
     private var nextIndex = 0
     private var lastMeter = 0.0
+    private var capturedSeconds = 0.0
     private var observers: [NSObjectProtocol] = []
     private var faultReported = false
 
@@ -46,7 +47,7 @@ final class AudioRecorder: @unchecked Sendable {
         observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: nil) { [weak self] note in
             guard let self, let type = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt else { return }
             if type == AVAudioSession.InterruptionType.began.rawValue {
-                self.queue.async { self.pauseOnQueue(); self.onEvent?(.interrupted(Date().timeIntervalSince(self.origin), true)) }
+                self.queue.async { if self.recording { self.pauseOnQueue(); self.onEvent?(.interrupted(Date().timeIntervalSince(self.origin), true)) } }
             } else {
                 let raw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
                 if AVAudioSession.InterruptionOptions(rawValue: raw).contains(.shouldResume) { self.onEvent?(.recoveryRequested) }
@@ -54,7 +55,19 @@ final class AudioRecorder: @unchecked Sendable {
         })
         observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: nil) { [weak self] _ in
             guard let self else { return }
-            self.queue.async { self.pauseOnQueue(); self.engine = AVAudioEngine(); self.onEvent?(.recoveryRequested) }
+            self.queue.async {
+                let wasRecording = self.recording
+                self.pauseOnQueue(); self.engine = AVAudioEngine()
+                if wasRecording { self.onEvent?(.interrupted(Date().timeIntervalSince(self.origin), false)); self.onEvent?(.recoveryRequested) }
+            }
+        })
+        observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: nil) { [weak self] _ in
+            guard let self else { return }
+            self.queue.async {
+                if self.recording && !self.engine.isRunning {
+                    self.pauseOnQueue(); self.onEvent?(.interrupted(Date().timeIntervalSince(self.origin), false)); self.onEvent?(.recoveryRequested)
+                }
+            }
         })
         observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: nil) { [weak self] _ in
             self?.onEvent?(.routeChanged)
@@ -109,8 +122,9 @@ final class AudioRecorder: @unchecked Sendable {
                 defer { self.slots.signal() }
                 guard self.recording else { return }
                 do {
-                    if packet.offset - self.chunkStart >= 30 { self.file = nil; try self.openChunk(format: copy.format, offset: packet.offset) }
+                    if packet.offset - self.chunkStart >= 30 || self.file?.processingFormat != copy.format { self.file = nil; try self.openChunk(format: copy.format, offset: packet.offset) }
                     try self.file?.write(from: copy)
+                    self.capturedSeconds += Double(copy.frameLength) / copy.format.sampleRate
                     // Nonblocking offer only; Speech copies/converts on its own queue.
                     self.onPacket?(packet)
                     if packet.offset - self.lastMeter >= 1 {
@@ -118,7 +132,7 @@ final class AudioRecorder: @unchecked Sendable {
                         let values = copy.floatChannelData?[0]
                         var peak: Float = 0
                         if let values { for i in stride(from: 0, to: Int(copy.frameLength), by: 8) { peak = max(peak, abs(values[i])) } }
-                        self.onEvent?(.meter(packet.offset, Double(peak), Self.memoryBytes()))
+                        self.onEvent?(.meter(packet.offset, Double(peak), Self.memoryBytes(), self.capturedSeconds))
                     }
                 } catch { self.fail("Audio write: \(error.localizedDescription)", offset: packet.offset) }
             }

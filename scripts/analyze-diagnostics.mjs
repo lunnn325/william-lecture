@@ -25,6 +25,7 @@ const report = {
   gaps_and_errors: events.filter(e => e.fields?.gap || e.event.endsWith('_error')).map(({ at,event,offset,fields }) => ({ at,event,offset,fields })),
   peak_resident_MB: Math.round(Math.max(0,...events.filter(e=>e.event==='health').map(e=>Number(e.fields?.resident_bytes)||0))/1048576),
   max_audio_MB: Math.round(Math.max(0,...events.filter(e=>e.event==='health').map(e=>Number(e.fields?.audio_bytes)||0))/1048576),
+  captured_audio_seconds: Math.max(0,...events.filter(e=>e.event==='health').map(e=>Number(e.fields?.captured_seconds)||0)),
   counts: Object.fromEntries([...new Set(events.map(e=>e.event))].map(event=>[event,events.filter(e=>e.event===event).length]))
 };
 console.log(JSON.stringify(report,null,2));
