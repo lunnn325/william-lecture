@@ -206,7 +206,6 @@ import WLAppleAudio
                 if piece.start < previousEnd - 0.01 {
                     log("speech_final_overlap", offset: piece.end, fields: ["previous_end": "\(previousEnd)", "range_start": "\(piece.start)"])
                 }
-                lastFinalEnd = piece.end
                 volatileEnglish = ""
                 enqueue { try await self.store.appendFinal(piece, session: session.id) }
                 log("speech_finalized", offset: piece.end, fields: ["range_start": "\(piece.start)", "range_end": "\(piece.end)", "end_to_receipt_ms": "\(Int(piece.receivedAt.timeIntervalSince(session.startedAt.addingTimeInterval(piece.end)) * 1000))"])
