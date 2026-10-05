@@ -1,0 +1,32 @@
+name: WilliamLecture
+options:
+  minimumXcodeGenVersion: 2.46.0
+  deploymentTarget:
+    iOS: "26.0"
+packages:
+  WLCore:
+    path: .
+targets:
+  WilliamLecture:
+    type: application
+    platform: iOS
+    sources:
+      - App
+    dependencies:
+      - package: WLCore
+        product: WLCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.williamlecture.validation
+        PRODUCT_NAME: WilliamLecture
+        MARKETING_VERSION: 0.0.1
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_FILE: App/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGNING_ALLOWED: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+    scheme:
+      gatherCoverageData: false
+

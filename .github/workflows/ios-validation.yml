@@ -1,0 +1,47 @@
+name: iOS Validation IPA
+on:
+  push:
+    branches: [main, master, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.5
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
+          xcodebuild -version
+          swift --version
+      - name: Install pinned XcodeGen 2.46.0
+        run: |
+          mkdir -p .tools
+          curl --fail --location https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip -o .tools/xcodegen.zip
+          unzip -q .tools/xcodegen.zip -d .tools
+          echo "$PWD/.tools/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Test core and build unsigned IPA
+        run: bash scripts/build-ios.sh
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: WilliamLecture-V0-unsigned-IPA
+          path: dist/WilliamLecture-V0-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-diagnostics
+          path: |
+            build/xcodebuild.log
+            build/Validation.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
