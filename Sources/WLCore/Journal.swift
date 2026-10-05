@@ -60,7 +60,20 @@ public actor SessionStore {
         self.root = root
     }
     public nonisolated func folder(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString, isDirectory: true) }
+    /// Idempotent first-launch setup. Creates missing sandbox parents as well as Sessions.
+    /// Genuine storage errors (permissions, disk full, a file at this path) still propagate.
+    public func prepare() throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        #if os(iOS)
+        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: root.path)
+        #endif
+    }
+    public func availableCapacityForRecording() throws -> Int64? {
+        try prepare()
+        return try root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage
+    }
     public func save(_ session: LectureSession) throws {
+        try prepare()
         let directory = folder(session.id)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .millisecondsSince1970; encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -70,7 +83,7 @@ public actor SessionStore {
         #endif
     }
     public func sessions() throws -> [LectureSession] {
-        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
+        try prepare()
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
         return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             .compactMap { directory in

@@ -42,7 +42,15 @@ import WLCore
     init() {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         store = SessionStore(root: documents.appendingPathComponent("Sessions", isDirectory: true))
-        Task { do { try await store.recover(); await refreshHistory() } catch { warning = error.localizedDescription } }
+        busy = true
+        Task {
+            defer { busy = false }
+            do {
+                try await store.prepare()
+                try await store.recover()
+                await refreshHistory()
+            } catch { warning = error.localizedDescription }
+        }
         network.pathUpdateHandler = { [weak self] path in Task { @MainActor in
             guard let self else { return }
             if path.status == .satisfied {
@@ -64,8 +72,7 @@ import WLCore
         guard !busy, !active else { return }; busy = true; defer { busy = false }
         await worker?.waitForCancellation(); worker = nil
         do {
-            let volume = try store.root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-            if let space = volume.volumeAvailableCapacityForImportantUsage, space < 500 * 1024 * 1024 { throw WLFailure.message("可用空间不足 500 MB；请清理后再录音") }
+            if let space = try await store.availableCapacityForRecording(), space < 500 * 1024 * 1024 { throw WLFailure.message("可用空间不足 500 MB；请清理后再录音") }
             let next = LectureSession(course: course.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未命名课程" : course)
             try await store.save(next)
             let folder = store.folder(next.id)

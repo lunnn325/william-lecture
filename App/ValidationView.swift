@@ -31,7 +31,7 @@ struct ValidationView: View {
                     Text("英文：\(controller.speechStatus)")
                     Text("中文：\(controller.translationStatus)")
                     ProgressView(value: min(1, controller.peak)).accessibilityLabel("麦克风峰值")
-                    if !controller.warning.isEmpty { Text(controller.warning).foregroundStyle(.red).textSelection(.enabled) }
+                    if !controller.warning.isEmpty { Text(controller.warning).foregroundStyle(.red).textSelection(.enabled).accessibilityIdentifier("system-warning") }
                     if let session = controller.session {
                         Button("补翻译 / 重试") { Task { await controller.retryTranslations(session) } }
                         Button("取消翻译请求") { controller.cancelTranslations() }

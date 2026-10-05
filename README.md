@@ -4,6 +4,8 @@
 
 最低 iOS/iPadOS 26.0。目标设备：iPhone 14 Pro Max、M4 iPad Pro。第一次使用可能需要联网下载 Apple 英文模型。录音先开始；模型准备期间的实时转写缺口会标记，不会伪造文字。
 
+0.0.2 修复首次安装的存储初始化：启动时自动建立 `Documents/Sessions`，空间检查也会先确保目录存在。保持原 bundle ID，可覆盖安装保留已有课堂数据。CI 增加空沙盒存储测试和全新 iOS 模拟器首次启动/重启测试。
+
 ## Windows 获取 IPA
 
 1. 打开 [GitHub Actions](https://github.com/lunnn325/william-lecture/actions/workflows/ios-validation.yml)，选择最新成功的 `iOS Validation IPA`。

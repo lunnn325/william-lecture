@@ -2,6 +2,50 @@ import XCTest
 @testable import WLCore
 
 final class CoreTests: XCTestCase {
+    func testFirstLaunchRecoveryCreatesMissingSandboxDirectories() async throws {
+        let sandbox = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: sandbox) }
+        let root = sandbox.appendingPathComponent("Documents/Sessions", isDirectory: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        let store = SessionStore(root: root)
+        try await store.recover()
+        let history = try await store.sessions()
+        XCTAssertTrue(history.isEmpty)
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory))
+        XCTAssertTrue(isDirectory.boolValue)
+    }
+    func testFirstRecordingCapacityCheckAndSaveWorkWithoutPriorSetup() async throws {
+        let sandbox = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: sandbox) }
+        let root = sandbox.appendingPathComponent("Documents/Sessions", isDirectory: true)
+        let store = SessionStore(root: root)
+        _ = try await store.availableCapacityForRecording()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.path))
+        let session = LectureSession(course: "首次录音")
+        try await store.save(session)
+        let history = try await store.sessions()
+        XCTAssertEqual(history.first?.id, session.id)
+    }
+    func testRepeatedStorageSetupKeepsExistingSessionData() async throws {
+        let sandbox = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: sandbox) }
+        let root = sandbox.appendingPathComponent("Documents/Sessions", isDirectory: true)
+        let store = SessionStore(root: root)
+        var session = LectureSession(course: "保留已有课堂"); session.state = .stopped
+        try await store.save(session)
+        let original = try Data(contentsOf: store.folder(session.id).appendingPathComponent("session.json"))
+        let reopened = SessionStore(root: root)
+        try await reopened.prepare(); try await reopened.prepare(); try await reopened.recover()
+        let history = try await reopened.sessions()
+        XCTAssertEqual(history.first?.id, session.id)
+        XCTAssertEqual(try Data(contentsOf: reopened.folder(session.id).appendingPathComponent("session.json")), original)
+    }
+    func testStorageSetupReportsFileCollisionWithoutDeletingIt() async throws {
+        let sandbox = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: sandbox) }
+        let root = sandbox.appendingPathComponent("Sessions")
+        let original = Data("preserve this file".utf8); try original.write(to: root)
+        let store = SessionStore(root: root)
+        do { try await store.prepare(); XCTFail("A file at the directory path must be reported") }
+        catch { XCTAssertEqual(try Data(contentsOf: root), original) }
+    }
     func testFinalBufferDoesNotDuplicateReplayOrOverlappingFinal() {
         var buffer = SentenceBuffer()
         let piece = SpeechPiece(text: "Social cost exceeds private cost.", start: 1, end: 4)

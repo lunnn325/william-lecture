@@ -28,6 +28,8 @@ jobs:
           echo "$PWD/.tools/xcodegen/bin" >> "$GITHUB_PATH"
       - name: Test core and build unsigned IPA
         run: bash scripts/build-ios.sh
+      - name: Verify fresh iOS install and relaunch
+        run: bash scripts/test-first-launch.sh
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
@@ -43,5 +45,7 @@ jobs:
           path: |
             build/xcodebuild.log
             build/Validation.xcresult
+            build/first-launch.log
+            build/FirstLaunch.xcresult
           if-no-files-found: ignore
           retention-days: 7
