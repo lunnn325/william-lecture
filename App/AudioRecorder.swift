@@ -30,6 +30,7 @@ final class AudioRecorder: @unchecked Sendable {
     private let slots = DispatchSemaphore(value: 96)
     private var engine = AVAudioEngine()
     private var file: AVAudioFile?
+    private var inputFormat: AVAudioFormat?
     private var directory: URL?
     private var origin = Date()
     private var originUptime = 0.0
@@ -122,7 +123,7 @@ final class AudioRecorder: @unchecked Sendable {
                 defer { self.slots.signal() }
                 guard self.recording else { return }
                 do {
-                    if packet.offset - self.chunkStart >= 30 || self.file?.processingFormat != copy.format { self.file = nil; try self.openChunk(format: copy.format, offset: packet.offset) }
+                    if packet.offset - self.chunkStart >= 30 || self.inputFormat != copy.format { self.file = nil; try self.openChunk(format: copy.format, offset: packet.offset) }
                     try self.file?.write(from: copy)
                     self.capturedSeconds += Double(copy.frameLength) / copy.format.sampleRate
                     // Nonblocking offer only; Speech copies/converts on its own queue.
@@ -150,6 +151,7 @@ final class AudioRecorder: @unchecked Sendable {
             AVNumberOfChannelsKey: format.channelCount, AVLinearPCMBitDepthKey: 16,
             AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false]
         file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: format.commonFormat, interleaved: format.isInterleaved)
+        inputFormat = format
         try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
         var resourceURL = url
         var resourceValues = URLResourceValues(); resourceValues.isExcludedFromBackup = true
