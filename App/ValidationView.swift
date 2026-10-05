@@ -29,8 +29,13 @@ struct ValidationView: View {
                 Section("系统状态") {
                     Text("录音：\(controller.audioStatus)")
                     Text("英文：\(controller.speechStatus)")
+                    if !controller.speechError.isEmpty {
+                        Text(controller.speechError).font(.caption).foregroundStyle(.red).textSelection(.enabled).accessibilityIdentifier("speech-error")
+                    }
+                    Button("重试英文转写") { Task { await controller.retrySpeech() } }.disabled(!controller.recording || controller.busy)
                     Text("中文：\(controller.translationStatus)")
                     ProgressView(value: min(1, controller.peak)).accessibilityLabel("麦克风峰值")
+                    Text(String(format: "收音平均 %.1f dBFS · 峰值 %.1f dBFS", controller.inputRMSDBFS, controller.inputPeakDBFS)).font(.caption)
                     if !controller.warning.isEmpty { Text(controller.warning).foregroundStyle(.red).textSelection(.enabled).accessibilityIdentifier("system-warning") }
                     if let session = controller.session {
                         Button("补翻译 / 重试") { Task { await controller.retryTranslations(session) } }
@@ -172,7 +177,8 @@ private struct SessionView: View {
     }
     private func playChunk() {
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback); try AVAudioSession.sharedInstance().setActive(true)
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+            try AVAudioSession.sharedInstance().setActive(true)
             let next = try AVAudioPlayer(contentsOf: controller.store.folder(session.id).appendingPathComponent(session.audioFiles[audioIndex]))
             let delegate = PlaybackDelegate { success in
                 Task { @MainActor in

@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import Darwin
 import WLCore
+import WLAppleAudio
 
 struct AudioPacket: @unchecked Sendable {
     let buffer: AVAudioPCMBuffer
@@ -12,8 +13,9 @@ struct AudioPacket: @unchecked Sendable {
 final class AudioRecorder: @unchecked Sendable {
     enum Event: Sendable {
         case started(Double), chunk(String, Double), paused(Double), stopped(Double)
+        case configuration([String: String])
         case interrupted(Double, Bool), recoveryRequested, routeChanged, failure(String, Double)
-        case meter(Double, Double, UInt64, Double)
+        case meter(Double, PCMLevelSummary, UInt64, Double)
     }
     private let callbackLock = NSLock()
     private var eventCallback: (@Sendable (Event) -> Void)?
@@ -40,6 +42,7 @@ final class AudioRecorder: @unchecked Sendable {
     private var nextIndex = 0
     private var lastMeter = 0.0
     private var capturedSeconds = 0.0
+    private var levels = PCMLevelAccumulator()
     private var observers: [NSObjectProtocol] = []
     private var faultReported = false
 
@@ -101,11 +104,16 @@ final class AudioRecorder: @unchecked Sendable {
     private func beginOnQueue() throws {
         guard !recording else { return }
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .measurement, options: [])
+        try session.setCategory(.record, mode: .default, options: [])
         try session.setPreferredSampleRate(48_000); try session.setActive(true)
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw WLFailure.message("麦克风格式不可用") }
+        onEvent?(.configuration(["category": session.category.rawValue, "mode": session.mode.rawValue,
+            "input_route": session.currentRoute.inputs.map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ", "),
+            "sample_rate": "\(format.sampleRate)", "channels": "\(format.channelCount)",
+            "input_gain": "\(session.inputGain)", "input_gain_settable": "\(session.isInputGainSettable)",
+            "pcm_format": format.description]))
         let offset = Date().timeIntervalSince(origin)
         try openChunk(format: format, offset: offset)
         faultReported = false; recording = true
@@ -126,14 +134,12 @@ final class AudioRecorder: @unchecked Sendable {
                     if packet.offset - self.chunkStart >= 30 || self.inputFormat != copy.format { self.file = nil; try self.openChunk(format: copy.format, offset: packet.offset) }
                     try self.file?.write(from: copy)
                     self.capturedSeconds += Double(copy.frameLength) / copy.format.sampleRate
+                    self.levels.append(copy)
                     // Nonblocking offer only; Speech copies/converts on its own queue.
                     self.onPacket?(packet)
                     if packet.offset - self.lastMeter >= 1 {
                         self.lastMeter = packet.offset
-                        let values = copy.floatChannelData?[0]
-                        var peak: Float = 0
-                        if let values { for i in stride(from: 0, to: Int(copy.frameLength), by: 8) { peak = max(peak, abs(values[i])) } }
-                        self.onEvent?(.meter(packet.offset, Double(peak), Self.memoryBytes(), self.capturedSeconds))
+                        self.onEvent?(.meter(packet.offset, self.levels.snapshotAndReset(), Self.memoryBytes(), self.capturedSeconds))
                     }
                 } catch { self.fail("Audio write: \(error.localizedDescription)", offset: packet.offset) }
             }
@@ -147,10 +153,7 @@ final class AudioRecorder: @unchecked Sendable {
         let name = String(format: "audio-%05d.caf", nextIndex); nextIndex += 1
         let url = directory.appendingPathComponent(name)
         // Recoverable chunks; 16-bit PCM reduces space, preserving microphone sample rate/channels.
-        let settings: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: format.sampleRate,
-            AVNumberOfChannelsKey: format.channelCount, AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false]
-        file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: format.commonFormat, interleaved: format.isInterleaved)
+        file = try PCMArchive.open(at: url, inputFormat: format)
         inputFormat = format
         try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
         var resourceURL = url

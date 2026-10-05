@@ -3,6 +3,7 @@ import Combine
 import Foundation
 import Network
 import WLCore
+import WLAppleAudio
 
 @MainActor final class LectureController: ObservableObject {
     @Published var course = "课堂测试"
@@ -13,10 +14,13 @@ import WLCore
     @Published var currentChinese = ""
     @Published var audioStatus = "未录音"
     @Published var speechStatus = "未启动"
+    @Published var speechError = ""
     @Published var translationStatus = "模拟模式"
     @Published var warning = ""
     @Published var elapsed = 0.0
     @Published var peak = 0.0
+    @Published var inputRMSDBFS = -120.0
+    @Published var inputPeakDBFS = -120.0
     @Published var busy = false
     @Published var mode = TranslationMode(rawValue: UserDefaults.standard.string(forKey: "translationMode") ?? "mock") ?? .mock
     @Published var model = UserDefaults.standard.string(forKey: "translationModel") ?? "gpt-4.1-mini"
@@ -133,6 +137,7 @@ import WLCore
     private func startSpeech() {
         speechReadyAt = nil
         seenSpeechResult = false
+        speechError = ""
         let service = SpeechService(); speech = service
         service.onEvent = { [weak self] event in self?.handleSpeech(event) }
         recorder?.onPacket = service.packetSink()
@@ -146,7 +151,11 @@ import WLCore
                 self.log("speech_ready", fields: ["engine": self.speechStatus, "locale": self.locale])
                 if ready > 1 { self.log("speech_preparation_gap", gap: "模型准备期间只录音，未实时转写；音频保留可补处理") }
             } catch is CancellationError { }
-            catch { self.speechStatus = "转写不可用；录音继续"; self.log("speech_error", fields: ["error": error.localizedDescription], gap: "实时英文可能缺失；原始音频继续保存"); self.warning = error.localizedDescription }
+            catch {
+                self.speechStatus = "转写不可用；录音继续"
+                self.speechError = SpeechErrorDetails.describe(error)
+                self.log("speech_error", fields: ["error": self.speechError], gap: "实时英文可能缺失；原始音频继续保存")
+            }
         }
     }
     private func finishSpeech() async {
@@ -159,7 +168,8 @@ import WLCore
         guard let session else { return }
         switch event {
         case .status(let status): speechStatus = status
-        case .error(let message): speechStatus = "转写错误；录音继续"; log("speech_error", fields: ["error": message], gap: "英文转写中断，音频保留")
+        case .error(let message): speechStatus = "转写错误；录音继续"; speechError = message; log("speech_error", fields: ["error": message], gap: "英文转写中断，音频保留")
+        case .diagnostic(let event, let fields): log(event, fields: fields)
         case .dropped(let offset): log("speech_input_drop", offset: offset, gap: "Speech 输入积压或转换失败；音频未丢失")
         case .result(let piece, let final):
             if !seenSpeechResult {
@@ -217,11 +227,13 @@ import WLCore
             log("audio_chunk", offset: offset, fields: ["file": name])
         case .paused: break
         case .stopped: break
-        case .meter(let offset, let peak, let memory, let capturedSeconds):
-            self.peak = peak; elapsed = offset
+        case .configuration(let fields): log("audio_input_configuration", fields: fields)
+        case .meter(let offset, let levels, let memory, let capturedSeconds):
+            self.peak = levels.peak; inputRMSDBFS = levels.rmsDBFS; inputPeakDBFS = levels.peakDBFS; elapsed = offset
             let audio = store.folder(session.id)
             let size = session.audioFiles.reduce(UInt64(0)) { sum, file in sum + (((try? FileManager.default.attributesOfItem(atPath: audio.appendingPathComponent(file).path)[.size]) as? NSNumber)?.uint64Value ?? 0) }
-            log("health", offset: offset, fields: ["resident_bytes": "\(memory)", "audio_bytes": "\(size)", "captured_seconds": "\(capturedSeconds)", "peak": "\(peak)"])
+            log("health", offset: offset, fields: ["resident_bytes": "\(memory)", "audio_bytes": "\(size)", "captured_seconds": "\(capturedSeconds)",
+                "peak": "\(levels.peak)", "input_peak_dbfs": "\(levels.peakDBFS)", "input_rms_dbfs": "\(levels.rmsDBFS)", "clipped_fraction": "\(levels.clippedFraction)"])
         case .interrupted(let offset, _):
             interrupted = true; self.session?.state = .interrupted; audioStatus = "系统中断；已保存音频"
             log("interruption", offset: offset, gap: "系统中断期间未采集音频")
@@ -272,4 +284,11 @@ import WLCore
         } catch { warning = error.localizedDescription }
     }
     func cancelTranslations() { worker?.cancel() }
+    func retrySpeech() async {
+        guard recording, !busy else { return }; busy = true; defer { busy = false }
+        await finishSpeech(); flushBuffer(); await persistence?.value
+        guard recording else { return }
+        log("speech_manual_retry", gap: "重启 Speech 期间只录音，实时英文可能缺失")
+        startSpeech()
+    }
 }

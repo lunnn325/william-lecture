@@ -2,11 +2,15 @@
 
 ## 一个麦克风入口，独立消费者
 
+0.0.3：录音和回放都显式使用 default 模式。此前 measurement 会减少系统动态处理，回放只改变 category 又保留了 measurement，可能导致偏低音量。此处没有给原音频加数字增益；收音电平按全秒、所有通道统计 RMS、peak dBFS 和削波比例，并记录实际 input route、mode、格式与设备 input gain。CAF 编码通过实际写入/读取音调测试验证幅度，真机远场音量仍须比较。[Apple measurement 说明](https://developer.apple.com/documentation/avfaudio/avaudiosession/mode-swift.struct/measurement)
+
 `AVAudioEngine` tap 复制有界 PCM buffer，立即交给专用串行写盘队列。Speech 通过独立有界转换队列接收音频；API worker 从已持久化英文读取。录音不会等待 Speech 模型、结果或网络。写盘积压/失败属于真实录音故障，停止采集并明确显示错误；不静默丢音频。Speech 积压只影响实时文字，音频保留。
 
 选择每 30 秒关闭一个 PCM CAF，优先可回收性和实现可验证性。已关闭片段独立可播放；当前片段的崩溃可恢复性需要真机验证。V0 暂未采用单个长时 M4A，避免未完成容器成为全部录音的风险。更大磁盘占用是明确代价；记录文件大小，开始时检查至少 500 MB 空间（此阈值并不保证足够录三小时）。后续可根据真实空间和功耗测量采用分段 AAC。
 
 ## Apple Speech 与意群
+
+0.0.3：AVAudioConverter 在独立串行队列里生成输出时间轴。每个输出缓冲区按实际输出帧数累加，源音频中断则重建转换器并保留时间空档；停止时排空重采样尾帧。重采样器可保留 priming 帧，因此不再将每个原缓冲区的时间戳直接用于转换后的音频，以免重叠并触发 Speech 输入错误。用真实 AVAudioConverter 验证 48k/44.1k、单双声道和非整除缓冲区的帧数、单调时间、幅度。模型安装后检查 installed，显式 prepareToAnalyze；主引擎初始化失败时尝试 Dictation。完整 domain/code/underlying error 显示并记录，可单独重试 Speech 而不停止录音。用户报告的初始化故障仍需新版真机错误信息确认根因。[Apple AnalyzerInput 时间要求](https://developer.apple.com/documentation/speech/analyzerinput/init(buffer:bufferstarttime:))
 
 最低 iOS26，运行时先检查 `SpeechTranscriber.isAvailable` 和 `supportedLocale`；不足时使用 `DictationTranscriber`。预留 locale、检查/安装系统模型，再取兼容 PCM 格式。AVAudioConverter 转换发生在独立队列。输入带 capture host-time 映射的 session 时间戳；暂停后新建分析器但保留 session 时间轴。
 

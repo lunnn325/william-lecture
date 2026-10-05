@@ -6,6 +6,8 @@
 
 0.0.2 修复首次安装的存储初始化：启动时自动建立 `Documents/Sessions`，空间检查也会先确保目录存在。保持原 bundle ID，可覆盖安装保留已有课堂数据。CI 增加空沙盒存储测试和全新 iOS 模拟器首次启动/重启测试。
 
+0.0.3 修正录音/回放的 measurement 模式，改用普通模式；修正重采样后输入 Speech 的时间戳，排空转换尾帧；检查模型状态并预热分析器，初始化失败尝试 Dictation 降级。系统状态显示可复制的完整 Speech 错误和收音平均/峰值 dBFS，可在持续录音时重试英文。原始音频没有额外数字放大。若仍无字幕，请复制完整 Speech 报错或分享 diagnostics，不能仅凭编译测试确认具体设备的 Speech 故障已经解决。
+
 ## Windows 获取 IPA
 
 1. 打开 [GitHub Actions](https://github.com/lunnn325/william-lecture/actions/workflows/ios-validation.yml)，选择最新成功的 `iOS Validation IPA`。
@@ -70,4 +72,4 @@ Windows 修改后提交即可触发 CI。CI 使用 `macos-26`、Xcode 26.5、Xco
 bash scripts/build-ios.sh
 ```
 
-`WLCore`：纯 Foundation 模型、final 意群缓冲、JSONL 恢复、导出和 SSE；`App`：音频、Speech、独立翻译 worker、Keychain、最小 SwiftUI。重要决定与当前限制在 [技术决定](docs/TECHNICAL-DECISIONS.md)。
+`WLCore`：纯 Foundation 模型、final 意群缓冲、JSONL 恢复、导出和 SSE；`WLAppleAudio`：可在 macOS XCTest 验证的 PCM 重采样、时间轴、录音电平和 CAF 写入；`App`：音频、Speech、独立翻译 worker、Keychain、最小 SwiftUI。重要决定与当前限制在 [技术决定](docs/TECHNICAL-DECISIONS.md)。

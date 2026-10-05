@@ -6,11 +6,11 @@ if (!input) { console.error('Pass an exported diagnostics.jsonl path.'); process
 const lines = readFileSync(input, 'utf8').split('\n');
 if (lines.at(-1)?.trim()) lines.pop(); // ignore interrupted unterminated tail
 const events = lines.filter(x => x.trim()).map(x => JSON.parse(x));
-const stats = (event, field, excludeMock = false) => {
+const stats = (event, field, excludeMock = false, unit = 'ms') => {
   const values = events.filter(e => e.event === event && (!excludeMock || e.fields?.mock === 'false'))
     .map(e => Number(e.fields?.[field])).filter(Number.isFinite).sort((a,b) => a-b);
-  const percentile = p => values.length ? Math.round(values[Math.ceil(values.length*p)-1]) : null;
-  return { count: values.length, p50_ms: percentile(.5), p95_ms: percentile(.95), max_ms: values.at(-1) ?? null };
+  const percentile = p => values.length ? Math.round(values[Math.ceil(values.length*p)-1] * (unit === 'ms' ? 1 : 10)) / (unit === 'ms' ? 1 : 10) : null;
+  return { count: values.length, [`p50_${unit}`]: percentile(.5), [`p95_${unit}`]: percentile(.95), [`max_${unit}`]: values.at(-1) ?? null };
 };
 const report = {
   note: 'Speech uses Apple audio ranges and local receipt times; this is not teacher-reference ground truth. Mock translations are excluded. First Speech result is measured per analyzer run.',
@@ -26,6 +26,10 @@ const report = {
   peak_resident_MB: Math.round(Math.max(0,...events.filter(e=>e.event==='health').map(e=>Number(e.fields?.resident_bytes)||0))/1048576),
   max_audio_MB: Math.round(Math.max(0,...events.filter(e=>e.event==='health').map(e=>Number(e.fields?.audio_bytes)||0))/1048576),
   captured_audio_seconds: Math.max(0,...events.filter(e=>e.event==='health').map(e=>Number(e.fields?.captured_seconds)||0)),
+  input_rms_dbfs: stats('health', 'input_rms_dbfs', false, 'dbfs'),
+  input_peak_dbfs: stats('health', 'input_peak_dbfs', false, 'dbfs'),
+  audio_input_configuration: events.filter(e=>e.event==='audio_input_configuration'),
+  speech_setup: events.filter(e=>e.event.startsWith('speech_asset') || e.event==='speech_primary_setup_failed' || e.event==='speech_analyzer_prepare'),
   counts: Object.fromEntries([...new Set(events.map(e=>e.event))].map(event=>[event,events.filter(e=>e.event===event).length]))
 };
 console.log(JSON.stringify(report,null,2));
