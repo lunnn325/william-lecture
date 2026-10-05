@@ -224,6 +224,9 @@ public actor SessionStore {
                name == URL(fileURLWithPath: name).lastPathComponent,
                let offset = $0.offset, offset.isFinite { offsets[name] = max(0, offset) }
         }
+        for name in offsets.keys where !FileManager.default.fileExists(atPath: folder(id).appendingPathComponent(name).path) {
+            throw WLFailure.message("音频片段缺失：\(name)；无法生成完整 M4A，现存 CAF 保留")
+        }
         return offsets
     }
     public nonisolated static func timestamp(_ seconds: Double) -> String {

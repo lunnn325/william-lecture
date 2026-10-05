@@ -82,6 +82,21 @@ final class HardeningTests: XCTestCase {
         } catch { XCTAssertTrue(error.localizedDescription.contains("deadline")) }
         await fulfillment(of: [done], timeout: 2)
     }
+    func testMissingIndexedAudioCannotBeSilentlyExportedAsAPauseGap() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(root: root); let session = LectureSession(course: "Missing audio")
+        try await store.save(session)
+        let name = "audio-00000.caf"
+        try JSONLines.append(Diagnostic("audio_chunk_open", offset: 0, fields: ["file": name]),
+                             to: store.folder(session.id).appendingPathComponent("audio-index.jsonl"))
+        do { _ = try await store.audioOffsets(session.id); XCTFail("Missing original audio must be reported") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("缺失")) }
+        try Data().write(to: store.folder(session.id).appendingPathComponent(name))
+        try JSONLines.append(Diagnostic("audio_chunk_first_frame", offset: 0.12, fields: ["file": name]),
+                             to: store.folder(session.id).appendingPathComponent("audio-index.jsonl"))
+        let offsets = try await store.audioOffsets(session.id)
+        XCTAssertEqual(offsets[name], 0.12)
+    }
     func testDeadlineHonorsCallerCancellation() async throws {
         let task = Task { try await AsyncDeadline.run(seconds: 10) { try await Task.sleep(for: .seconds(10)); return 1 } }
         task.cancel()
