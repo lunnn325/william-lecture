@@ -145,9 +145,12 @@ struct LessonDetailView: View {
             if session.state == .recovered { Text("已恢复，末尾录音需核对").font(.footnote).foregroundStyle(Color.williamWarning) }
             if totals.total > 0 || totals.unknown > 0 {
                 Button { showUsage.toggle() } label: {
-                    Text("\(totals.total.formatted()) tokens\(totals.unknown > 0 ? " · 部分用量未返回" : "")").font(.caption).foregroundStyle(Color.williamSecondary)
+                    Text(totals.total == 0 ? "用量未返回" : "\(totals.total.formatted()) tokens\(totals.unknown > 0 ? " · 部分用量未返回" : "")").font(.caption).foregroundStyle(Color.williamSecondary)
                 }.buttonStyle(.plain)
-                if showUsage { Text("输入 \(totals.input) · 输出 \(totals.output)\n实时 \(totals.live) · 课后 \(totals.postLesson)").font(.caption).foregroundStyle(Color.williamSecondary) }
+                if showUsage {
+                    if totals.total > 0 { Text("已返回统计：输入 \(totals.input) · 输出 \(totals.output)\n实时 \(totals.live) · 课后 \(totals.postLesson)").font(.caption).foregroundStyle(Color.williamSecondary) }
+                    if totals.unknown > 0 { Text("\(totals.unknown) 次请求的用量未返回").font(.caption).foregroundStyle(Color.williamSecondary) }
+                }
             }
         }
     }
