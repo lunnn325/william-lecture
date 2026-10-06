@@ -29,6 +29,8 @@ import WLAppleAudio
     @Published var inputRMSDBFS = -120.0
     @Published var inputPeakDBFS = -120.0
     @Published var busy = false
+    @Published var starting = false
+    @Published var stopping = false
     @Published var mode = TranslationMode(rawValue: UserDefaults.standard.string(forKey: "translationMode") ?? "openAI") ?? .openAI
     @Published var model = UserDefaults.standard.string(forKey: "translationModel") ?? "gpt-4.1-mini"
     @Published var locale = UserDefaults.standard.string(forKey: "speechLocale") ?? "en-AU"
@@ -104,7 +106,7 @@ import WLAppleAudio
         return true
     }
     func start() async {
-        guard !busy, !active else { return }; busy = true; defer { busy = false }
+        guard !busy, !active else { return }; busy = true; starting = true; defer { busy = false; starting = false }
         #if DEBUG
         if isUIFixture { await startUIFixture(); return }
         #endif
@@ -161,7 +163,7 @@ import WLAppleAudio
         if let session { try? await store.save(session) }
     }
     func stop() async {
-        guard !busy, active else { return }; busy = true; defer { busy = false }
+        guard !busy, active else { return }; busy = true; stopping = true; defer { busy = false; stopping = false }
         #if DEBUG
         if isUIFixture { session?.state = .stopped; session?.stoppedAt = Date(); if let session { try? await store.save(session) }; await refreshHistory(); return }
         #endif

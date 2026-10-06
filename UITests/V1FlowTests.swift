@@ -40,6 +40,12 @@ import UIKit
         XCTAssertTrue(app.staticTexts["已准备 4 个文件"].waitForExistence(timeout: 40))
         capture(app, "export")
         XCTAssertTrue(app.buttons["分享 / 保存到文件"].isEnabled)
+        let language = app.buttons["export-language"]
+        if language.exists { language.tap() } else { app.buttons["语言, 双语"].firstMatch.tap() }
+        app.buttons["英文"].firstMatch.tap()
+        XCTAssertFalse(app.buttons["分享 / 保存到文件"].exists, "A changed option must not share the previous export")
+        app.buttons["生成导出文件"].tap()
+        XCTAssertTrue(app.staticTexts["已准备 4 个文件"].waitForExistence(timeout: 40))
         app.buttons["完成"].firstMatch.tap(); app.buttons["完成"].firstMatch.tap()
         app.buttons["start-recording"].tap()
         XCTAssertTrue(app.buttons["pause-recording"].waitForExistence(timeout: 10))
@@ -70,6 +76,12 @@ import UIKit
         let app = launch(active: true)
         XCUIDevice.shared.orientation = .landscapeLeft
         XCTAssertTrue(app.buttons["pause-recording"].waitForExistence(timeout: 20))
+        let rotated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in app.frame.width > app.frame.height }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [rotated], timeout: 10), .completed)
+        app.buttons["pause-recording"].tap()
+        XCTAssertTrue(app.staticTexts["已暂停"].waitForExistence(timeout: 5))
+        app.buttons["pause-recording"].tap()
+        XCTAssertTrue(app.staticTexts["录音中"].waitForExistence(timeout: 5))
         capture(app, "workspace-landscape")
         XCTAssertTrue(app.buttons["stop-recording"].isHittable)
         XCUIDevice.shared.orientation = .portrait

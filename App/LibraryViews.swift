@@ -19,12 +19,12 @@ struct HistoryView: View {
                     NavigationLink { LessonDetailView(session: session) } label: {
                         VStack(alignment: .leading, spacing: 7) {
                             Text(session.course).font(.headline)
-                            Text(session.startedAt.formatted(date: .abbreviated, time: .shortened)).font(.subheadline).foregroundStyle(.secondary)
+                            Text(session.startedAt.formatted(date: .abbreviated, time: .shortened)).font(.subheadline).foregroundStyle(Color.williamSecondary)
                             HStack {
                                 Text(SessionStore.timestamp(session.duration)).monospacedDigit()
                                 Text("·")
                                 Text(session.state == .recovered ? "已恢复 · 请核对录音" : (session.state == .stopped ? "已保存" : "正在录课"))
-                            }.font(.caption).foregroundStyle(.secondary)
+                            }.font(.caption).foregroundStyle(Color.williamSecondary)
                         }.padding(.vertical, 7)
                     }
                 }
@@ -84,16 +84,16 @@ struct LessonDetailView: View {
     }
     @ViewBuilder private var metadataSection: some View {
             Section {
-                Text(session.startedAt.formatted(date: .abbreviated, time: .shortened)).font(.subheadline).foregroundStyle(.secondary)
+                Text(session.startedAt.formatted(date: .abbreviated, time: .shortened)).font(.subheadline).foregroundStyle(Color.williamSecondary)
                 HStack { Text(SessionStore.timestamp(session.duration)).monospacedDigit(); Spacer(); Text("英语 → 中文") }.font(.subheadline)
-                if session.state == .recovered { Text("这节课在异常退出后恢复，请核对最后一段录音。原始文件已保留。").font(.footnote).foregroundStyle(.secondary) }
-                if !session.usesRecordingTimeline { Text("旧版记录保留暂停空档，跳转到无音频的时段会定位到下一段录音。").font(.footnote).foregroundStyle(.secondary) }
+                if session.state == .recovered { Text("这节课在异常退出后恢复，请核对最后一段录音。原始文件已保留。").font(.footnote).foregroundStyle(Color.williamSecondary) }
+                if !session.usesRecordingTimeline { Text("旧版记录保留暂停空档，跳转到无音频的时段会定位到下一段录音。").font(.footnote).foregroundStyle(Color.williamSecondary) }
             }
     }
     @ViewBuilder private var playbackSection: some View {
             Section("回听课堂") {
                 if playback.loading { ProgressView("正在读取录音…") }
-                else if session.audioFiles.isEmpty { Text("这节课没有可播放的音频，文字稿仍可查看和导出。").foregroundStyle(.secondary) }
+                else if session.audioFiles.isEmpty { Text("这节课没有可播放的音频，文字稿仍可查看和导出。").foregroundStyle(Color.williamSecondary) }
                 else {
                     Slider(value: Binding(get: { scrubbing ? scrubValue : playback.position }, set: { scrubValue = $0 }), in: 0...max(1, playback.duration)) { editing in
                         if editing { scrubbing = true; scrubValue = playback.position; resumeAfterScrub = playback.playing; playback.pause() }
@@ -102,7 +102,7 @@ struct LessonDetailView: View {
                     HStack {
                         Text(SessionStore.timestamp(scrubbing ? scrubValue : playback.position))
                         Spacer(); Text(SessionStore.timestamp(playback.duration))
-                    }.font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                    }.font(.caption).monospacedDigit().foregroundStyle(Color.williamSecondary)
                     HStack {
                         Button { playback.seek(to: playback.position - 15, resume: playback.playing) } label: { Image(systemName: "gobackward.15").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("后退十五秒")
                         Spacer()
@@ -111,8 +111,8 @@ struct LessonDetailView: View {
                         Button { playback.seek(to: playback.position + 15, resume: playback.playing) } label: { Image(systemName: "goforward.15").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("前进十五秒")
                     }.buttonStyle(.borderless).disabled(!playback.ready || controller.active)
                 }
-                if !playback.error.isEmpty { Text(playback.error).font(.footnote).foregroundStyle(.orange) }
-                if controller.active { Text("录课期间暂不回放，以保护麦克风采集。").font(.footnote).foregroundStyle(.secondary) }
+                if !playback.error.isEmpty { Text(playback.error).font(.footnote).foregroundStyle(Color.williamWarning) }
+                if controller.active { Text("录课期间暂不回放，以保护麦克风采集。").font(.footnote).foregroundStyle(Color.williamSecondary) }
             }
     }
     @ViewBuilder private var notesSection: some View {
@@ -135,7 +135,7 @@ struct LessonDetailView: View {
     @ViewBuilder private var transcriptSection: some View {
             Section("文字稿") {
                 Toggle("只看有标记或笔记的句子", isOn: $markedOnly).onChange(of: markedOnly) { _, _ in page = 0 }
-                if filtered.isEmpty { Text(markedOnly ? "还没有标记。长按一句话，可留下笔记。" : "尚无稳定英文。音频若已保存，可先回听或导出。").foregroundStyle(.secondary) }
+                if filtered.isEmpty { Text(markedOnly ? "还没有标记。长按一句话，可留下笔记。" : "尚无稳定英文。音频若已保存，可先回听或导出。").foregroundStyle(Color.williamSecondary) }
                 ForEach(Array(filtered.dropFirst(page * 50).prefix(50))) { segment in
                     detailCaption(segment)
                 }
@@ -152,7 +152,7 @@ struct LessonDetailView: View {
             Section {
                 Button("补全翻译") { Task { await controller.retryTranslations(session); await load() } }.disabled(controller.busy || controller.active)
                 Button("刷新记录") { Task { await load() } }
-                if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(.orange) }
+                if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(Color.williamWarning) }
             }
     }
     private func detailCaption(_ segment: TranscriptSegment) -> some View {
@@ -192,34 +192,36 @@ struct ExportView: View {
     @State private var files: [URL] = []
     @State private var sharing = false
     @State private var error = ""
+    private var exportChoice: String { "\(language.rawValue)|\(markdown)|\(audio)|\(notes)|\(diagnostics)" }
     var body: some View {
         NavigationStack {
             Form {
                 Section("文字稿") {
-                    Picker("语言", selection: $language) { Text("双语").tag(ExportLanguage.bilingual); Text("英文").tag(ExportLanguage.english); Text("中文").tag(ExportLanguage.chinese) }
+                    Picker("语言", selection: $language) { Text("双语").tag(ExportLanguage.bilingual); Text("英文").tag(ExportLanguage.english); Text("中文").tag(ExportLanguage.chinese) }.accessibilityIdentifier("export-language")
                     Picker("文件格式", selection: $markdown) { Text("TXT").tag(false); Text("Markdown").tag(true) }.pickerStyle(.segmented)
-                    Text("优先使用 GPT 最终中文；未完成时使用完整匹配的本机中文。缺失内容会标明。").font(.footnote).foregroundStyle(.secondary)
-                }
+                    Text("优先使用 GPT 最终中文；未完成时使用完整匹配的本机中文。缺失内容会标明。").font(.footnote).foregroundStyle(Color.williamSecondary)
+                }.disabled(working)
                 Section("同时带走") {
                     Toggle("标记与笔记", isOn: $notes)
                     Toggle("整节录音 · M4A", isOn: $audio).disabled(session.audioFiles.isEmpty)
                     Toggle("诊断文件", isOn: $diagnostics)
-                    Text("笔记独立成文件；诊断用于检查延迟或故障。所有文件均为生成时的快照。").font(.footnote).foregroundStyle(.secondary)
-                }
+                    Text("笔记独立成文件；诊断用于检查延迟或故障。所有文件均为生成时的快照。").font(.footnote).foregroundStyle(Color.williamSecondary)
+                }.disabled(working)
                 Section {
                     Button(working ? "正在准备文件…" : "生成导出文件") { generate() }.disabled(working || controller.active || controller.busy)
                     if working { ProgressView("音频较长时需要一些时间…"); Button("取消导出") { task?.cancel() } }
                     if !files.isEmpty {
                         Button { sharing = true } label: { Label("分享 / 保存到文件", systemImage: "square.and.arrow.up") }.disabled(working)
-                        Text("已准备 \(files.count) 个文件").font(.caption).foregroundStyle(.secondary)
+                        Text("已准备 \(files.count) 个文件").font(.caption).foregroundStyle(Color.williamSecondary)
                     }
-                    if !error.isEmpty { Text(error).foregroundStyle(.orange).font(.footnote) }
-                    if controller.active { Text("请先结束录课，等待保存完成后再导出。").font(.footnote).foregroundStyle(.secondary) }
+                    if !error.isEmpty { Text(error).foregroundStyle(Color.williamWarning).font(.footnote) }
+                    if controller.active { Text("请先结束录课，等待保存完成后再导出。").font(.footnote).foregroundStyle(Color.williamSecondary) }
                 }
             }
                 .navigationTitle("导出课堂").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { task?.cancel(); dismiss() } } }
                 .sheet(isPresented: $sharing) { ActivityShareView(files: files) }
+                .onChange(of: exportChoice) { _, _ in files = []; error = "" }
                 .onDisappear { task?.cancel() }
         }
     }

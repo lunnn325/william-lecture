@@ -34,7 +34,7 @@ struct LectureRootView: View {
             HistoryView().tabItem { Label("记录", systemImage: "clock") }
             NavigationStack { LectureSettingsView() }.tabItem { Label("设置", systemImage: "gearshape") }
         }
-        .tint(.teal)
+        .tint(.williamAccent)
         .onChange(of: phase) { _, phase in controller.setForeground(phase == .active) }
     }
 }
@@ -45,14 +45,14 @@ struct CaptionTextView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(caption.english).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(caption.english).font(.subheadline).foregroundStyle(Color.williamSecondary).fixedSize(horizontal: false, vertical: true)
                 if marked { Image(systemName: "bookmark.fill").font(.caption).foregroundStyle(.tint).accessibilityLabel("已标记") }
             }
             Text(caption.chinese ?? "中文稍后出现…")
                 .font(.title2.weight(.medium)).lineSpacing(5)
-                .foregroundStyle(caption.chinese == nil ? Color.secondary : Color.primary)
+                .foregroundStyle(caption.chinese == nil ? Color.williamSecondary : Color.primary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(SessionStore.timestamp(caption.start)).font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+            Text(SessionStore.timestamp(caption.start)).font(.caption2).monospacedDigit().foregroundStyle(Color.williamSecondary)
         }
         .padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
@@ -100,6 +100,7 @@ struct WorkspaceView: View {
                 }
                 .accessibilityIdentifier("caption-scroll")
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(feed.following ? .bottom : .top, for: .sizeChanges)
                 .onScrollGeometryChange(for: Bool.self) { geometry in
                     geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height + geometry.contentInsets.bottom - 80
                 } action: { _, value in nearBottom = value }
@@ -146,8 +147,8 @@ struct WorkspaceView: View {
                                 Text(controller.course).font(.headline).lineLimit(1)
                                 if !controller.active { Image(systemName: "chevron.down").font(.caption2) }
                             }
-                            Text("英语 → 中文").font(.caption).foregroundStyle(.secondary)
-                        }.foregroundStyle(.primary).frame(minHeight: 44)
+                            Text("英语 → 中文").font(.caption).foregroundStyle(Color.williamSecondary)
+                        }.foregroundStyle(Color(uiColor: .label)).frame(minHeight: 44)
                     }.disabled(controller.active || controller.busy).accessibilityLabel("选择课程，\(controller.course)").accessibilityIdentifier("course-picker")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -174,11 +175,11 @@ struct WorkspaceView: View {
             Text(controller.active ? "正在听课堂…" : "把注意力留给课堂。")
                 .font(.title2.weight(.medium))
             Text(controller.active ? "英文会先出现，中文随后跟上。\n录音独立保存在这台设备。" : "选择课程，开始录音。\n没听清时，低头看一眼中文。")
-                .font(.body).foregroundStyle(.secondary).lineSpacing(5)
+                .font(.body).foregroundStyle(Color.williamSecondary).lineSpacing(5)
             if !controller.active {
                 Button("选择课程") { courses = true }.frame(minHeight: 44)
                 Text("轻点一句可标记，双击可写笔记。")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(Color.williamSecondary)
             }
         }.padding(.top, 64).padding(.bottom, 24).frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -192,24 +193,24 @@ struct WorkspaceView: View {
                     Text(gptSummary)
                     Spacer(minLength: 4)
                     Image(systemName: "info.circle")
-                }.font(.caption).foregroundStyle(.secondary).frame(minHeight: 44)
+                }.font(.caption).foregroundStyle(Color.williamSecondary).frame(minHeight: 44)
             }.accessibilityLabel("翻译状态与诊断")
             if !controller.warning.isEmpty {
                 Button("保存或录音遇到问题 · 查看详情") { status = true }
-                    .font(.footnote).foregroundStyle(.orange).frame(minHeight: 44).accessibilityIdentifier("system-warning")
+                    .font(.footnote).foregroundStyle(Color.williamWarning).frame(minHeight: 44).accessibilityIdentifier("system-warning")
             } else if !controller.speechError.isEmpty {
                 Button("英文暂时不可用 · 点按重试") { Task { await controller.retrySpeech() } }
-                    .font(.footnote).foregroundStyle(.orange).frame(minHeight: 44)
+                    .font(.footnote).foregroundStyle(Color.williamWarning).frame(minHeight: 44)
             } else if controller.mode == .mock {
                 Text("演示内容，不代表真实翻译。请在设置中启用 OpenAI。")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(Color.williamSecondary)
             }
         }.padding(.horizontal, 22).padding(.bottom, 6).background(.background)
     }
     private var controls: some View {
         VStack(spacing: 12) {
             HStack(spacing: 8) {
-                Circle().fill(controller.recording ? Color.teal : Color.secondary).frame(width: 6, height: 6)
+                Circle().fill(controller.recording && !controller.starting && !controller.stopping ? Color.williamAccent : Color.williamSecondary).frame(width: 6, height: 6)
                 Text(recordingState).font(.subheadline)
                 Spacer()
                 Text(SessionStore.timestamp(controller.elapsed)).font(.system(.callout, design: .monospaced)).monospacedDigit()
@@ -225,7 +226,7 @@ struct WorkspaceView: View {
                     Button("查看这节课") { savedDetail = true }.font(.subheadline).frame(minHeight: 44)
                 }
                 Button { Task { await controller.start() } } label: {
-                    Label(controller.busy ? "正在准备…" : "开始录音", systemImage: "mic.fill")
+                    Label(controller.busy ? (controller.stopping ? "正在保存…" : "正在准备…") : "开始录音", systemImage: "mic.fill")
                         .font(.headline).frame(maxWidth: .infinity, minHeight: 52)
                 }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule).disabled(controller.busy)
                     .accessibilityIdentifier("start-recording")
@@ -248,6 +249,8 @@ struct WorkspaceView: View {
         return "GPT 最终版"
     }
     private var recordingState: String {
+        if controller.starting { return "正在准备录音…" }
+        if controller.stopping { return "正在保存…" }
         switch controller.session?.state {
         case .recording: return "录音中"
         case .paused: return "已暂停"
@@ -342,12 +345,12 @@ struct NoteEditorView: View {
         NavigationStack {
             Form {
                 Section(SessionStore.timestamp(context.note.offset)) {
-                    if !context.note.englishSnapshot.isEmpty { Text(context.note.englishSnapshot).font(.subheadline).foregroundStyle(.secondary).lineLimit(4) }
+                    if !context.note.englishSnapshot.isEmpty { Text(context.note.englishSnapshot).font(.subheadline).foregroundStyle(Color.williamSecondary).lineLimit(4) }
                     Toggle("标记这一刻", isOn: $marked)
                 }
                 Section("留给课后复习") { TextEditor(text: $text).frame(minHeight: 160).accessibilityIdentifier("note-text") }
-                if !error.isEmpty { Section { Text(error).foregroundStyle(.orange) } }
-                Text("笔记独立保存，不会修改课堂原文。最多 6,000 字。").font(.caption).foregroundStyle(.secondary)
+                if !error.isEmpty { Section { Text(error).foregroundStyle(Color.williamWarning) } }
+                Text("笔记独立保存，不会修改课堂原文。最多 6,000 字。").font(.caption).foregroundStyle(Color.williamSecondary)
             }
             .navigationTitle("课堂笔记").navigationBarTitleDisplayMode(.inline)
             .toolbar {

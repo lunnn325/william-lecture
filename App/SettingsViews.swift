@@ -14,7 +14,7 @@ struct LectureSettingsView: View {
     @State private var preparing = false
     var body: some View {
         Form {
-            if controller.active { Section { Text("正在录课。翻译和课程配置会锁定到这节课结束；你仍可查看诊断。").font(.footnote).foregroundStyle(.secondary) } }
+            if controller.active { Section { Text("正在录课。翻译和课程配置会锁定到这节课结束；你仍可查看诊断。").font(.footnote).foregroundStyle(Color.williamSecondary) } }
             Section("课程") {
                 NavigationLink { CoursePickerView(inSheet: false) } label: { LabeledContent("当前课程", value: controller.course) }
                     .disabled(controller.active || controller.busy)
@@ -24,7 +24,7 @@ struct LectureSettingsView: View {
             }
             Section("本机中文") {
                 Toggle("本机中文快显", isOn: $controller.localEnabled).disabled(controller.active || controller.busy)
-                Text(controller.localStatus).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(controller.localStatus).font(.footnote).foregroundStyle(Color.williamSecondary).fixedSize(horizontal: false, vertical: true)
                 Button("检查语言模型") { Task { await controller.checkLocalModels() } }.disabled(preparing || controller.active || controller.busy)
                 Button("准备英文与简体中文模型") {
                     guard !controller.active else { return }
@@ -36,7 +36,7 @@ struct LectureSettingsView: View {
                     ProgressView("准备语言模型…")
                     Button("取消准备") { preparation = nil; preparing = false; controller.localStatus = "准备已取消，可稍后重试" }
                 }
-                Text("录课前准备一次。录课时不会下载翻译模型；本机不可用时仍保留录音和 GPT 路径。").font(.footnote).foregroundStyle(.secondary)
+                Text("录课前准备一次。录课时不会下载翻译模型；本机不可用时仍保留录音和 GPT 路径。").font(.footnote).foregroundStyle(Color.williamSecondary)
             }
             Section("OpenAI 最终翻译") {
                 Text(keySaved || Keychain.load() != nil ? "API Key 已保存在本机" : "尚未配置 API Key")
@@ -44,12 +44,12 @@ struct LectureSettingsView: View {
                 TextField("模型名称", text: $controller.model).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(controller.active || controller.busy)
                 Button("保存设置") { save() }.disabled(controller.active || controller.busy || preparing || controller.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 if Keychain.load() != nil { Button("移除 API Key", role: .destructive) { removeKey = true }.disabled(controller.active || controller.busy) }
-                if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(.orange) }
-                Text("仅稳定英文片段会发给 OpenAI，原始音频留在本机。Key 保存在 Keychain，不进入导出或诊断。没有 Key 仍可使用已准备的本机翻译。").font(.footnote).foregroundStyle(.secondary)
+                if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(Color.williamWarning) }
+                Text("仅稳定英文片段会发给 OpenAI，原始音频留在本机。Key 保存在 Keychain，不进入导出或诊断。没有 Key 仍可使用已准备的本机翻译。").font(.footnote).foregroundStyle(Color.williamSecondary)
             }
             Section {
                 NavigationLink { DiagnosticsView() } label: { Label("状态与诊断", systemImage: "stethoscope") }
-                Text("William Lecture 1.0.0\n课堂记录保存在这台设备。文字、笔记、音频可在课程详情导出。").font(.footnote).foregroundStyle(.secondary)
+                Text("William Lecture 1.0.0\n课堂记录保存在这台设备。文字、笔记、音频可在课程详情导出。").font(.footnote).foregroundStyle(Color.williamSecondary)
             }
         }.navigationTitle("设置").navigationBarTitleDisplayMode(inSheet ? .inline : .large)
             .toolbar { if inSheet { ToolbarItem(placement: .confirmationAction) { Button("完成") { if controller.active || controller.busy { dismiss() } else { save(); if error.isEmpty { dismiss() } } }.disabled(preparing) } } }
@@ -136,13 +136,13 @@ struct DiagnosticsView: View {
                     Button("补全 / 重试翻译") { Task { await controller.retryTranslations(session) } }.disabled(controller.busy)
                     Button("取消 GPT 请求") { controller.cancelTranslations() }
                 }
-                Text("Speech 和翻译的故障不会主动停止录音。录音本身出现错误时，请检查空间或系统中断后再恢复。").font(.footnote).foregroundStyle(.secondary)
+                Text("Speech 和翻译的故障不会主动停止录音。录音本身出现错误时，请检查空间或系统中断后再恢复。").font(.footnote).foregroundStyle(Color.williamSecondary)
             }
             Section("诊断与测试") {
                 Text(String(format: "收音平均 %.1f dBFS · 峰值 %.1f dBFS", controller.inputRMSDBFS, controller.inputPeakDBFS)).font(.footnote)
                 Picker("翻译模式", selection: $controller.mode) { Text("正常翻译").tag(TranslationMode.openAI); Text("演示 / 模拟").tag(TranslationMode.mock) }.disabled(controller.active || controller.busy)
                     .onChange(of: controller.mode) { _, _ in if !controller.active && !controller.busy { controller.saveSettings(key: nil) } }
-                Text("演示译文有明确标识。诊断文件可从课程详情导出，用于区分转写、缓冲和翻译延迟。").font(.footnote).foregroundStyle(.secondary)
+                Text("演示译文有明确标识。诊断文件可从课程详情导出，用于区分转写、缓冲和翻译延迟。").font(.footnote).foregroundStyle(Color.williamSecondary)
             }
         }.navigationTitle("状态与诊断").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
