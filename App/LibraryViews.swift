@@ -196,7 +196,7 @@ struct LessonDetailView: View {
                 Button { noteContext = NoteContext(sessionID: session.id, note: note) } label: {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(SessionStore.readingTime(note.offset)).font(.caption).monospacedDigit().foregroundStyle(Color.williamSecondary)
-                        if !note.english.isEmpty { Text(note.english).font(.subheadline).foregroundStyle(Color.williamSecondary) }
+                        if !note.englishSnapshot.isEmpty { Text(note.englishSnapshot).font(.subheadline).foregroundStyle(Color.williamSecondary) }
                         if !note.text.isEmpty { Text(note.text).foregroundStyle(.primary) }
                         else { Image(systemName: "bookmark").foregroundStyle(Color.williamAccent) }
                     }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
