@@ -12,8 +12,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    # Standard public runner (14 GB RAM), not a paid larger runner.
-    runs-on: macos-26-intel
+    # Standard public Apple Silicon runner, not a paid larger runner.
+    runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
