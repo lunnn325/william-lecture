@@ -37,7 +37,7 @@ import UIKit
         app.buttons["导出课堂"].tap()
         enableSwitch("整节录音 · M4A", app: app); enableSwitch("诊断文件", app: app)
         app.buttons["生成导出文件"].tap()
-        XCTAssertTrue(app.staticTexts["已准备 4 个文件"].waitForExistence(timeout: 40))
+        waitPreparedFiles(app)
         capture(app, "export")
         XCTAssertTrue(app.buttons["分享 / 保存到文件"].isEnabled)
         let language = app.buttons["export-language"]
@@ -45,7 +45,7 @@ import UIKit
         app.buttons["英文"].firstMatch.tap()
         XCTAssertFalse(app.buttons["分享 / 保存到文件"].exists, "A changed option must not share the previous export")
         app.buttons["生成导出文件"].tap()
-        XCTAssertTrue(app.staticTexts["已准备 4 个文件"].waitForExistence(timeout: 40))
+        waitPreparedFiles(app)
         app.buttons["完成"].firstMatch.tap(); app.buttons["完成"].firstMatch.tap()
         app.buttons["start-recording"].tap()
         XCTAssertTrue(app.buttons["pause-recording"].waitForExistence(timeout: 10))
@@ -93,6 +93,13 @@ import UIKit
     private func waitEnabled(_ element: XCUIElement) {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in element.isEnabled }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 20), .completed)
+    }
+    private func waitPreparedFiles(_ app: XCUIApplication) {
+        XCTAssertTrue(app.buttons["分享 / 保存到文件"].waitForExistence(timeout: 40))
+        let count = app.staticTexts["已准备 4 个文件"]
+        // iPad's compact native sheet virtualizes the counter below the share row.
+        if !count.exists { app.swipeUp() }
+        XCTAssertTrue(count.waitForExistence(timeout: 5))
     }
     private func selectTab(_ name: String, app: XCUIApplication) {
         let tab = app.tabBars.buttons[name]
