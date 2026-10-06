@@ -95,7 +95,7 @@ import WLAppleAudio
     var active: Bool { session != nil && session?.state != .stopped && session?.state != .recovered }
     var recording: Bool { session?.state == .recording }
     @discardableResult func saveSettings(key: String?) -> Bool {
-        guard !active else { warning = "请先结束录课，再更改翻译设置"; return false }
+        guard !active, !busy else { warning = "请先结束录课并等待保存完成，再更改翻译设置"; return false }
         if let key { do { try Keychain.save(key.trimmingCharacters(in: .whitespacesAndNewlines)) } catch { warning = error.localizedDescription; return false } }
         UserDefaults.standard.set(mode.rawValue, forKey: "translationMode")
         UserDefaults.standard.set(model, forKey: "translationModel")
@@ -115,7 +115,10 @@ import WLAppleAudio
         do {
             if let space = try await store.availableCapacityForRecording(), space < 500 * 1024 * 1024 { throw WLFailure.message("可用空间不足 500 MB；请清理后再录音") }
             let next = LectureSession(course: course.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未命名课程" : course)
-            selectCourse(next.course)
+            course = next.course
+            if !savedCourses.contains(course) { savedCourses.append(course) }
+            UserDefaults.standard.set(course, forKey: "selectedCourse")
+            UserDefaults.standard.set(savedCourses, forKey: "savedCourses")
             try await store.save(next)
             let folder = store.folder(next.id)
             try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: folder.path)
@@ -346,7 +349,7 @@ import WLAppleAudio
     }
     var courseChoices: [String] { Array(Set(savedCourses + history.map(\.course) + [course])).sorted() }
     func selectCourse(_ name: String) {
-        guard !active else { return }
+        guard !active, !busy else { return }
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         if course != String(name.prefix(80)) {

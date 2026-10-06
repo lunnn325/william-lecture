@@ -17,21 +17,21 @@ struct LectureSettingsView: View {
             if controller.active { Section { Text("正在录课。翻译和课程配置会锁定到这节课结束；你仍可查看诊断。").font(.footnote).foregroundStyle(.secondary) } }
             Section("课程") {
                 NavigationLink { CoursePickerView(inSheet: false) } label: { LabeledContent("当前课程", value: controller.course) }
-                    .disabled(controller.active)
+                    .disabled(controller.active || controller.busy)
                 Picker("英文口音", selection: $controller.locale) {
                     Text("澳洲英语").tag("en-AU"); Text("美式英语").tag("en-US"); Text("英式英语").tag("en-GB")
-                }.disabled(controller.active)
+                }.disabled(controller.active || controller.busy)
             }
             Section("本机中文") {
-                Toggle("本机中文快显", isOn: $controller.localEnabled).disabled(controller.active)
+                Toggle("本机中文快显", isOn: $controller.localEnabled).disabled(controller.active || controller.busy)
                 Text(controller.localStatus).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Button("检查语言模型") { Task { await controller.checkLocalModels() } }.disabled(preparing || controller.active)
+                Button("检查语言模型") { Task { await controller.checkLocalModels() } }.disabled(preparing || controller.active || controller.busy)
                 Button("准备英文与简体中文模型") {
                     guard !controller.active else { return }
                     preparing = true; controller.localStatus = "正在准备，请完成系统提示"
                     if preparation == nil { preparation = AppleLocalTranslator.preparationConfiguration() }
                     else { preparation?.invalidate() }
-                }.disabled(preparing || controller.active || controller.mode == .mock)
+                }.disabled(preparing || controller.active || controller.busy || controller.mode == .mock)
                 if preparing {
                     ProgressView("准备语言模型…")
                     Button("取消准备") { preparation = nil; preparing = false; controller.localStatus = "准备已取消，可稍后重试" }
@@ -40,10 +40,10 @@ struct LectureSettingsView: View {
             }
             Section("OpenAI 最终翻译") {
                 Text(keySaved || Keychain.load() != nil ? "API Key 已保存在本机" : "尚未配置 API Key")
-                SecureField("输入新 Key，留空保留原 Key", text: $key).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(controller.active)
-                TextField("模型名称", text: $controller.model).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(controller.active)
-                Button("保存设置") { save() }.disabled(controller.active || preparing || controller.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                if Keychain.load() != nil { Button("移除 API Key", role: .destructive) { removeKey = true }.disabled(controller.active) }
+                SecureField("输入新 Key，留空保留原 Key", text: $key).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(controller.active || controller.busy)
+                TextField("模型名称", text: $controller.model).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(controller.active || controller.busy)
+                Button("保存设置") { save() }.disabled(controller.active || controller.busy || preparing || controller.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if Keychain.load() != nil { Button("移除 API Key", role: .destructive) { removeKey = true }.disabled(controller.active || controller.busy) }
                 if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(.orange) }
                 Text("仅稳定英文片段会发给 OpenAI，原始音频留在本机。Key 保存在 Keychain，不进入导出或诊断。没有 Key 仍可使用已准备的本机翻译。").font(.footnote).foregroundStyle(.secondary)
             }
@@ -52,13 +52,13 @@ struct LectureSettingsView: View {
                 Text("William Lecture 1.0.0\n课堂记录保存在这台设备。文字、笔记、音频可在课程详情导出。").font(.footnote).foregroundStyle(.secondary)
             }
         }.navigationTitle("设置").navigationBarTitleDisplayMode(inSheet ? .inline : .large)
-            .toolbar { if inSheet { ToolbarItem(placement: .confirmationAction) { Button("完成") { if controller.active { dismiss() } else { save(); if error.isEmpty { dismiss() } } }.disabled(preparing) } } }
+            .toolbar { if inSheet { ToolbarItem(placement: .confirmationAction) { Button("完成") { if controller.active || controller.busy { dismiss() } else { save(); if error.isEmpty { dismiss() } } }.disabled(preparing) } } }
             .task { if !controller.active { await controller.checkLocalModels() } }
-            .onChange(of: controller.localEnabled) { _, _ in if !controller.active { controller.saveSettings(key: nil) } }
-            .onChange(of: controller.locale) { _, _ in if !controller.active { controller.saveSettings(key: nil) } }
+            .onChange(of: controller.localEnabled) { _, _ in if !controller.active && !controller.busy { controller.saveSettings(key: nil) } }
+            .onChange(of: controller.locale) { _, _ in if !controller.active && !controller.busy { controller.saveSettings(key: nil) } }
             .onDisappear {
                 key = ""
-                if !controller.active && !controller.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { controller.saveSettings(key: nil) }
+                if !controller.active && !controller.busy && !controller.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { controller.saveSettings(key: nil) }
             }
             .interactiveDismissDisabled(preparing || !key.isEmpty)
             .alert("移除本机 API Key？", isPresented: $removeKey) {
@@ -100,14 +100,14 @@ struct CoursePickerView: View {
                         controller.selectCourse(course); if inSheet { dismiss() }
                     } label: {
                         HStack { Text(course).foregroundStyle(.primary); Spacer(); if controller.course == course { Image(systemName: "checkmark").foregroundStyle(.tint) } }
-                    }.disabled(controller.active)
+                    }.disabled(controller.active || controller.busy)
                 }
             }
             Section("添加课程") {
-                TextField("例如 ECON1111 · 微观经济学", text: $name).disabled(controller.active).accessibilityIdentifier("new-course-name")
+                TextField("例如 ECON1111 · 微观经济学", text: $name).disabled(controller.active || controller.busy).accessibilityIdentifier("new-course-name")
                 Button("添加并选择") {
                     controller.selectCourse(name); name = ""; if inSheet { dismiss() }
-                }.disabled(controller.active || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }.disabled(controller.active || controller.busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }.navigationTitle("选择课程").navigationBarTitleDisplayMode(.inline)
     }
@@ -140,8 +140,8 @@ struct DiagnosticsView: View {
             }
             Section("诊断与测试") {
                 Text(String(format: "收音平均 %.1f dBFS · 峰值 %.1f dBFS", controller.inputRMSDBFS, controller.inputPeakDBFS)).font(.footnote)
-                Picker("翻译模式", selection: $controller.mode) { Text("正常翻译").tag(TranslationMode.openAI); Text("演示 / 模拟").tag(TranslationMode.mock) }.disabled(controller.active)
-                    .onChange(of: controller.mode) { _, _ in if !controller.active { controller.saveSettings(key: nil) } }
+                Picker("翻译模式", selection: $controller.mode) { Text("正常翻译").tag(TranslationMode.openAI); Text("演示 / 模拟").tag(TranslationMode.mock) }.disabled(controller.active || controller.busy)
+                    .onChange(of: controller.mode) { _, _ in if !controller.active && !controller.busy { controller.saveSettings(key: nil) } }
                 Text("演示译文有明确标识。诊断文件可从课程详情导出，用于区分转写、缓冲和翻译延迟。").font(.footnote).foregroundStyle(.secondary)
             }
         }.navigationTitle("状态与诊断").navigationBarTitleDisplayMode(.inline)

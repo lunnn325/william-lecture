@@ -144,7 +144,7 @@ struct WorkspaceView: View {
                             }
                             Text("英语 → 中文").font(.caption).foregroundStyle(.secondary)
                         }.foregroundStyle(.primary).frame(minHeight: 44)
-                    }.disabled(controller.active).accessibilityLabel("选择课程").accessibilityIdentifier("course-picker")
+                    }.disabled(controller.active || controller.busy).accessibilityLabel("选择课程").accessibilityIdentifier("course-picker")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { settings = true } label: { Image(systemName: "gearshape") }
@@ -183,19 +183,19 @@ struct WorkspaceView: View {
             Button { status = true } label: {
                 HStack(spacing: 6) {
                     Image(systemName: controller.localEnabled ? "iphone" : "text.bubble")
-                    Text(controller.localEnabled ? "本机快显" : "本机已关闭")
+                    Text(localSummary)
                     Text("·")
-                    Text(controller.mode == .mock ? "演示翻译" : (Keychain.load() == nil ? "GPT 未配置" : "GPT 最终版"))
+                    Text(gptSummary)
                     Spacer(minLength: 4)
                     Image(systemName: "info.circle")
                 }.font(.caption).foregroundStyle(.secondary).frame(minHeight: 44)
             }.accessibilityLabel("翻译状态与诊断")
             if !controller.warning.isEmpty {
                 Button("保存或录音遇到问题 · 查看详情") { status = true }
-                    .font(.footnote).foregroundStyle(.orange).accessibilityIdentifier("system-warning")
+                    .font(.footnote).foregroundStyle(.orange).frame(minHeight: 44).accessibilityIdentifier("system-warning")
             } else if !controller.speechError.isEmpty {
                 Button("英文暂时不可用 · 点按重试") { Task { await controller.retrySpeech() } }
-                    .font(.footnote).foregroundStyle(.orange)
+                    .font(.footnote).foregroundStyle(.orange).frame(minHeight: 44)
             } else if controller.mode == .mock {
                 Text("演示内容，不代表真实翻译。请在设置中启用 OpenAI。")
                     .font(.caption).foregroundStyle(.secondary)
@@ -229,6 +229,20 @@ struct WorkspaceView: View {
         }.frame(maxWidth: 760).padding(.horizontal, 22).padding(.top, 14).padding(.bottom, 12)
             .frame(maxWidth: .infinity).background(.bar)
     }
+    private var localSummary: String {
+        if !controller.localEnabled { return "本机已关闭" }
+        if controller.localStatus.contains("未准备") || controller.localStatus.contains("需要准备") { return "本机待准备" }
+        if controller.localStatus.contains("不可用") || controller.localStatus.contains("不支持") { return "本机不可用" }
+        if controller.localStatus.contains("超时") { return "本机暂时超时" }
+        return "本机快显"
+    }
+    private var gptSummary: String {
+        if controller.mode == .mock { return "演示翻译" }
+        if Keychain.load() == nil { return "GPT 未配置" }
+        if controller.translationStatus.contains("翻译中") { return "GPT 正在完善" }
+        if controller.translationStatus.contains("暂停") || controller.translationStatus.contains("取消") || controller.translationStatus.contains("不可用") { return "GPT 暂缓" }
+        return "GPT 最终版"
+    }
     private var recordingState: String {
         switch controller.session?.state {
         case .recording: return "录音中"
@@ -248,6 +262,7 @@ struct WorkspaceView: View {
     private var stopButton: some View {
         Button { confirmStop = true } label: { Label("停止", systemImage: "stop.fill").fixedSize(horizontal: true, vertical: false).frame(maxWidth: .infinity, minHeight: 48) }
             .buttonStyle(.borderedProminent).buttonBorderShape(.capsule).tint(.primary).disabled(controller.busy)
+            .foregroundStyle(Color(uiColor: .systemBackground))
             .accessibilityIdentifier("stop-recording")
     }
     private var noteButton: some View {

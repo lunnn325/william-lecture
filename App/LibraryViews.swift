@@ -58,12 +58,39 @@ struct LessonDetailView: View {
     }
     var body: some View {
         List {
+            metadataSection
+            playbackSection
+            notesSection
+            transcriptSection
+            recoverySection
+        }.listStyle(.insetGrouped).navigationTitle(session.course).navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { Button { export = true } label: { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("导出课堂") }
+                if inSheet { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
+            }
+            .sheet(isPresented: $export) { ExportView(session: session) }
+            .sheet(item: $noteContext, onDismiss: { Task { await load() } }) { NoteEditorView(context: $0) }
+            .task {
+                playback.recordingActive = { controller.active }
+                await load()
+                do { let offsets = try await controller.store.audioOffsets(session.id); await playback.prepare(session: session, folder: controller.store.folder(session.id), offsets: offsets) }
+                catch { error = error.localizedDescription }
+                while !Task.isCancelled && !controller.active && segments.contains(where: { $0.status == .pending && $0.error == nil }) {
+                    do { try await Task.sleep(for: .seconds(4)) } catch { return }; await load()
+                }
+            }
+            .onDisappear { playback.stop() }
+            .onChange(of: controller.active) { _, active in if active { playback.stop() } }
+    }
+    @ViewBuilder private var metadataSection: some View {
             Section {
                 Text(session.startedAt.formatted(date: .abbreviated, time: .shortened)).font(.subheadline).foregroundStyle(.secondary)
                 HStack { Text(SessionStore.timestamp(session.duration)).monospacedDigit(); Spacer(); Text("英语 → 中文") }.font(.subheadline)
                 if session.state == .recovered { Text("这节课在异常退出后恢复，请核对最后一段录音。原始文件已保留。").font(.footnote).foregroundStyle(.secondary) }
                 if !session.usesRecordingTimeline { Text("旧版记录保留暂停空档，跳转到无音频的时段会定位到下一段录音。").font(.footnote).foregroundStyle(.secondary) }
             }
+    }
+    @ViewBuilder private var playbackSection: some View {
             Section("回听课堂") {
                 if playback.loading { ProgressView("正在读取录音…") }
                 else if session.audioFiles.isEmpty { Text("这节课没有可播放的音频，文字稿仍可查看和导出。").foregroundStyle(.secondary) }
@@ -87,6 +114,8 @@ struct LessonDetailView: View {
                 if !playback.error.isEmpty { Text(playback.error).font(.footnote).foregroundStyle(.orange) }
                 if controller.active { Text("录课期间暂不回放，以保护麦克风采集。").font(.footnote).foregroundStyle(.secondary) }
             }
+    }
+    @ViewBuilder private var notesSection: some View {
             if !notes.isEmpty {
                 Section("标记与笔记") {
                     ForEach(notes) { note in
@@ -102,17 +131,13 @@ struct LessonDetailView: View {
                     }
                 }
             }
+    }
+    @ViewBuilder private var transcriptSection: some View {
             Section("文字稿") {
                 Toggle("只看有标记或笔记的句子", isOn: $markedOnly).onChange(of: markedOnly) { _, _ in page = 0 }
                 if filtered.isEmpty { Text(markedOnly ? "还没有标记。长按一句话，可留下笔记。" : "尚无稳定英文。音频若已保存，可先回听或导出。").foregroundStyle(.secondary) }
                 ForEach(Array(filtered.dropFirst(page * 50).prefix(50))) { segment in
-                    CaptionTextView(caption: WorkspaceCaption(segment), marked: notes.first { $0.segmentID == segment.id }?.marked == true)
-                        .contextMenu {
-                            Button("从这里播放", systemImage: "play") { playback.seek(to: segment.start, resume: true) }.disabled(controller.active || !playback.ready)
-                            Button("标记 / 写笔记", systemImage: "bookmark") { edit(segment) }
-                            Button("复制英文", systemImage: "doc.on.doc") { UIPasteboard.general.string = segment.english }
-                            if let chinese = segment.exportChinese { Button("复制中文", systemImage: "doc.on.doc") { UIPasteboard.general.string = chinese } }
-                        }
+                    detailCaption(segment)
                 }
                 if filtered.count > 50 {
                     HStack {
@@ -122,29 +147,23 @@ struct LessonDetailView: View {
                     }.buttonStyle(.borderless).frame(minHeight: 44)
                 }
             }
+    }
+    @ViewBuilder private var recoverySection: some View {
             Section {
                 Button("补全翻译") { Task { await controller.retryTranslations(session); await load() } }.disabled(controller.busy || controller.active)
                 Button("刷新记录") { Task { await load() } }
                 if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(.orange) }
             }
-        }.listStyle(.insetGrouped).navigationTitle(session.course).navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button { export = true } label: { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("导出课堂") }
-                if inSheet { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
+    }
+    private func detailCaption(_ segment: TranscriptSegment) -> some View {
+        let marked = notes.first(where: { $0.segmentID == segment.id })?.marked == true
+        return CaptionTextView(caption: WorkspaceCaption(segment), marked: marked)
+            .contextMenu {
+                Button("从这里播放", systemImage: "play") { playback.seek(to: segment.start, resume: true) }.disabled(controller.active || !playback.ready)
+                Button("标记 / 写笔记", systemImage: "bookmark") { edit(segment) }
+                Button("复制英文", systemImage: "doc.on.doc") { UIPasteboard.general.string = segment.english }
+                if let chinese = segment.exportChinese { Button("复制中文", systemImage: "doc.on.doc") { UIPasteboard.general.string = chinese } }
             }
-            .sheet(isPresented: $export) { ExportView(session: session) }
-            .sheet(item: $noteContext, onDismiss: { Task { await load() } }) { NoteEditorView(context: $0) }
-            .task {
-                playback.recordingActive = { controller.active }
-                await load()
-                do { let offsets = try await controller.store.audioOffsets(session.id); await playback.prepare(session: session, folder: controller.store.folder(session.id), offsets: offsets) }
-                catch { error = error.localizedDescription }
-                while !Task.isCancelled && !controller.active && segments.contains(where: { $0.status == .pending && $0.error == nil }) {
-                    do { try await Task.sleep(for: .seconds(4)) } catch { return }; await load()
-                }
-            }
-            .onDisappear { playback.stop() }
-            .onChange(of: controller.active) { _, active in if active { playback.stop() } }
     }
     private func edit(_ segment: TranscriptSegment) {
         let note = notes.first { $0.segmentID == segment.id } ?? LectureNote(segmentID: segment.id, offset: segment.start, english: segment.english)
