@@ -67,6 +67,18 @@ extension LectureController {
             segment.chinese = example.1; segment.status = .mock
             try await store.append(segment, session: lesson.id)
         }
+        let sources = try await store.segments(lesson.id)
+        var content = LessonContent(sessionID: lesson.id, segments: sources)
+        content.state = .completed
+        content.title = "[MOCK] 外部性与价格限制"
+        content.overview = "[MOCK] 模拟器流程样例，不代表真实 API 结果。"
+        content.outline = [
+            StudyNode(id: "cost", title: "社会成本", body: "社会成本包括他人承担的成本。", segmentIDs: [sources[1].id], children: [
+                StudyNode(id: "tax", title: "税收与私人激励", body: "税收可以使私人激励更接近社会成本。", segmentIDs: [sources[2].id])
+            ]),
+            StudyNode(id: "ceiling", title: "价格上限", body: "低于均衡价格的价格上限会造成短缺。", segmentIDs: [sources[17].id])
+        ]
+        _ = try await store.saveContent(content)
         try await store.log(Diagnostic("ui_fixture", fields: ["mock": "true", "purpose": "simulator flow and screenshots only"]), session: lesson.id)
     }
 }

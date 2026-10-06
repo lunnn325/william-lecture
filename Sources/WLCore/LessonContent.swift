@@ -187,10 +187,14 @@ extension SessionStore {
     public func exportStudy(_ id: UUID) throws -> URL {
         guard let content = try content(id), !content.outline.isEmpty else { throw WLFailure.message("摘要尚未完成") }
         var lines = ["# \(content.title ?? "课堂摘要")", content.overview ?? ""]
+        let times = Dictionary(uniqueKeysWithValues: try segments(id).map { ($0.id, $0.start) })
         func add(_ nodes: [StudyNode], depth: Int) {
             for n in nodes {
                 lines.append("\(String(repeating: "#", count: min(6, depth))) \(n.title)")
-                lines.append(n.body); add(n.children, depth: depth + 1)
+                lines.append(n.body)
+                let references = n.segmentIDs.compactMap { times[$0].map(Self.timestamp) }
+                if !references.isEmpty { lines.append("来源：\(references.joined(separator: "、"))") }
+                add(n.children, depth: depth + 1)
             }
         }
         add(content.outline, depth: 2)

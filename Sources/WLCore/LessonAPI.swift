@@ -96,7 +96,9 @@ public final class LessonAPI: @unchecked Sendable {
                       key: String, store: SessionStore) async throws -> (String, String, [StudyNode]) {
         struct Result: Decodable { var title: String; var overview: String; var outline: [StudyNode] }
         func node(_ depth: Int) -> [String: Any] {
-            var children: [String: Any] = ["type": "array", "items": depth > 0 ? node(depth - 1) : ["type": "string"]]
+            let item: [String: Any]
+            if depth > 0 { item = node(depth - 1) } else { item = ["type": "string"] }
+            var children: [String: Any] = ["type": "array", "items": item]
             if depth == 0 { children["maxItems"] = 0 }
             return Self.object(["id": ["type": "string"], "title": ["type": "string"], "body": ["type": "string"],
                                 "segmentIDs": ["type": "array", "items": ["type": "string"]], "children": children])

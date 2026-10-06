@@ -280,7 +280,7 @@ struct StudySummaryNode: View {
                     Spacer(minLength: 12)
                     if let first = node.segmentIDs.first, let offset = times[first] { Text(SessionStore.readingTime(offset)).font(.caption).foregroundStyle(Color.williamSecondary) }
                 }
-            }.buttonStyle(.plain)
+            }.buttonStyle(.plain).accessibilityIdentifier("summary-source-\(node.id)")
             if !node.body.isEmpty { Text(node.body).font(.body).lineSpacing(6) }
             ForEach(node.children) { child in StudySummaryNode(node: child, depth: depth + 1, times: times, jump: jump).padding(.leading, 12) }
         }.padding(.vertical, 6)
@@ -305,7 +305,7 @@ struct MindMapBranch: View {
     let jump: ([UUID]) -> Void
     var body: some View {
         HStack(spacing: 16) {
-            Button { jump(node.segmentIDs) } label: { Text(node.title).font(.subheadline.weight(.medium)).foregroundStyle(.primary).frame(width: 180, alignment: .leading) }.buttonStyle(.plain)
+            Button { jump(node.segmentIDs) } label: { Text(node.title).font(.subheadline.weight(.medium)).foregroundStyle(.primary).frame(width: 180, alignment: .leading) }.buttonStyle(.plain).accessibilityIdentifier("map-source-\(node.id)")
             if !node.children.isEmpty {
                 Rectangle().fill(Color.williamAccent.opacity(0.2)).frame(width: 1)
                 VStack(alignment: .leading, spacing: 12) {

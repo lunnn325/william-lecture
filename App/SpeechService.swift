@@ -110,7 +110,7 @@ private final class SpeechInputBridge: @unchecked Sendable {
         await withCheckedContinuation { done in queue.async {
             do {
                 for output in try self.converter?.finish() ?? [] {
-                    if case .dropped = sink?.yield(AnalyzerInput(buffer: output.buffer, bufferStartTime: output.start)) {
+                    if let sink, case .dropped = sink.yield(AnalyzerInput(buffer: output.buffer, bufferStartTime: output.start)) {
                         self.reportGap(output.start.seconds, output.start.seconds + Double(output.buffer.frameLength) / output.buffer.format.sampleRate)
                     }
                 }
