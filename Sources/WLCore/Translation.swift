@@ -80,6 +80,7 @@ public final class Translator: @unchecked Sendable {
 @MainActor public final class TranslationWorker {
     public var onUpdate: ((TranscriptSegment) -> Void)?
     public var onState: ((String) -> Void)?
+    public var hasDraft: ((UUID) -> Bool)?
     private var pump: Task<Void, Never>?
     private var requests: [UUID: Task<Void, Never>] = [:]
     private var diagnosticWrites: Task<Void, Never>?
@@ -157,17 +158,17 @@ public final class Translator: @unchecked Sendable {
 
     private func process(_ original: TranscriptSegment) async {
         var segment = original
+        var token: UUID?
         do {
             for attempt in 1...3 {
                 try Task.checkCancellation()
-                segment.attempts += 1; segment.submittedAt = nil; segment.firstTranslationAt = nil
-                segment.completedAt = nil; segment.chinese = nil; segment.error = nil
-                // Pending English is durable before any API call. Do not fsync diagnostics in the
-                // request/stream callback: capture their timestamps now, write them independently.
-                try await store.append(segment, session: session.id)
+                let request = UUID(); token = request
+                guard let begun = try await store.beginGPT(original, session: session.id, request: request, at: Date()) else {
+                    stale(original, kind: "start"); return
+                }
+                segment = begun
                 try Task.checkCancellation()
                 onUpdate?(segment)
-                segment.submittedAt = Date()
                 let submittedAt = segment.submittedAt!
                 let queuedAt = segment.queuedAt ?? segment.receivedAt
                 record(Diagnostic("translation_request", offset: segment.end, fields: [
@@ -185,7 +186,11 @@ public final class Translator: @unchecked Sendable {
                     try Task.checkCancellation()
                     segment.chinese = text; segment.firstTranslationAt = streamingFirst.removeValue(forKey: segment.id)
                     segment.completedAt = Date(); segment.status = config.mock ? .mock : .completed
-                    try await store.append(segment, session: session.id)
+                    guard let merged = try await store.applyGPT(segment, session: session.id, request: request, status: segment.status,
+                        chinese: text, firstAt: segment.firstTranslationAt, completedAt: segment.completedAt) else {
+                        streamingText.removeValue(forKey: segment.id); stale(segment, kind: "completed"); return
+                    }
+                    segment = merged
                     streamingText.removeValue(forKey: segment.id); onUpdate?(segment)
                     var completionFields = [
                         "segment": segment.id.uuidString, "mock": "\(config.mock)",
@@ -210,7 +215,9 @@ public final class Translator: @unchecked Sendable {
                         try await Task.sleep(for: .seconds(delay))
                     } else {
                         segment.status = retryable ? .pending : .failed
-                        try await store.append(segment, session: session.id)
+                        guard let merged = try await store.applyGPT(segment, session: session.id, request: request,
+                            status: segment.status, error: segment.error) else { stale(segment, kind: "error"); return }
+                        segment = merged
                         onUpdate?(segment); suspended = true; automaticRetryAllowed = retryable
                         onState?("翻译暂停：\(segment.error ?? "未知错误")；可点击补翻译")
                         return
@@ -219,7 +226,7 @@ public final class Translator: @unchecked Sendable {
             }
         } catch is CancellationError {
             streamingText.removeValue(forKey: segment.id); streamingFirst.removeValue(forKey: segment.id)
-            segment.chinese = nil; segment.status = .pending; onUpdate?(segment)
+            if let token, let merged = try? await store.cancelGPT(segment, session: session.id, request: token) { onUpdate?(merged) }
             onState?("翻译取消；待处理英文已保存")
         } catch {
             suspended = true; onState?("翻译队列：\(error.localizedDescription)")
@@ -228,17 +235,23 @@ public final class Translator: @unchecked Sendable {
 
     private var streamingText: [UUID: String] = [:]
     private var streamingFirst: [UUID: Date] = [:]
-    private func stream(_ part: String, segment: TranscriptSegment) {
+    private func stream(_ part: String, segment: TranscriptSegment) async {
         guard !Task.isCancelled, !part.isEmpty else { return }
+        guard let current = try? await store.translationSnapshot(segment, session: session.id),
+              current.gptRequestID == segment.gptRequestID, current.status == .pending, !Task.isCancelled else {
+            stale(segment, kind: "stream"); return
+        }
         let first = streamingFirst[segment.id] == nil
         if first { streamingFirst[segment.id] = Date() }
         streamingText[segment.id, default: ""] += part
-        var display = segment
+        var display = current
         display.chinese = streamingText[segment.id]; display.firstTranslationAt = streamingFirst[segment.id]
-        onUpdate?(display) // First Chinese reaches UI before any diagnostic disk write.
+        let showStream = current.validLocalChinese == nil && !(hasDraft?(segment.id) ?? false)
+        if showStream { onUpdate?(display) }
         if first, let at = streamingFirst[segment.id] {
             var firstFields = [
                 "segment": segment.id.uuidString, "mock": "\(config.mock)",
+                "revision": "\(segment.sourceRevision)", "displayed": "\(showStream)",
                 "request_ms": "\(Self.ms(at.timeIntervalSince(segment.submittedAt ?? at)))"
             ]
             if let endDate = segment.audioEndDate(in: session) {
@@ -246,6 +259,10 @@ public final class Translator: @unchecked Sendable {
             }
             record(Diagnostic("translation_first_result", offset: segment.end, fields: firstFields, at: at))
         }
+    }
+    private func stale(_ segment: TranscriptSegment, kind: String) {
+        record(Diagnostic("gpt_stale_response", offset: segment.end,
+            fields: ["segment": segment.id.uuidString, "revision": "\(segment.sourceRevision)", "kind": kind]))
     }
     private func record(_ item: Diagnostic) {
         let previous = diagnosticWrites

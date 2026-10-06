@@ -1,6 +1,22 @@
 # V0 技术决定
 
-当前版本为 0.0.7；任务隔离、停止收尾、恢复、导出及暂停计时的最新行为和验证边界见 [V0 Hardening 报告](NIGHTLY_HARDENING_REPORT.md)。下文保留各版本决定的背景。
+当前版本为 0.0.8；录音仍沿用 0.0.7 实际音频时间轴。下文保留各版本决定的背景。
+
+## 0.0.8：本机草稿与 GPT 最终版
+
+本机路径是独立服务，默认开启；前台 partial 在 UI 内替换，不追加进正式文字稿。约 300 ms 合并，连续修订不重置等待期限，partial 请求至少间隔约 500 ms；一个实际请求和一个最新待处理 partial。稳定内容由磁盘日志索引读取，与草稿交替，稳定队列交替取最新/最旧。后台撤销未定稿任务身份，只处理稳定段；系统是否允许后台执行仍须真机确认。
+
+字幕 ID 在 Buffer 形成时预分配，定稿沿用同 ID。revision、原文快照、课堂 ID、epoch/请求 token 防止迟到回调串台。只追加时可接受仍完整保留的旧词边界前缀；否定改写、撤销、重启不能接受旧结果。无法按时间可靠切分的重叠 partial 撤销，不猜字符边界。显示过的中文允许暂留，但只有完整稳定英文完全匹配的本机译文能作为导出兜底；partial 永不进入正式稿。
+
+使用独立 `TranslationSession(installedSource:target:)`，仅处理已安装模型；iOS 26.4+ 显式 `.lowLatency`，26.0–26.3 默认传统会话。设置页检查英语→简体中文，`.translationTask` 负责用户授权/下载。录课期间不调用 prepareTranslation。iPhone 14 Pro Max 不需要 Apple Intelligence；模拟器使用假译者，不能验证真实翻译。[Apple 会话接口](https://developer.apple.com/documentation/translation/translationsession/init(installedsource:target:))、[低延迟策略](https://developer.apple.com/documentation/translation/translationsession/strategy/lowlatency)、[设备限制](https://developer.apple.com/documentation/translation/translating-text-within-your-app)。
+
+单次本机请求 4 秒截止。超时失效并尝试取消，但实际任务未返回前不释放名额；共享 actor 也保护跨课堂并发，防止取消不合作的旧模型与新模型重叠。失败后本轮关闭本机调度，录音/Speech/GPT 继续；可补翻译重试。没有 Key 也能本机运行；mock 本机内容显式带 MOCK。
+
+GPT 只消费原 Buffer 的稳定段。有本机中文时隐藏 GPT 流式碎片，完整成功后一次替换；没有本机中文时沿用流式显示。较早段只更新历史行，不将主字幕拉回旧句。单条只显示一版中文，来源和状态在系统状态区，不加动画。
+
+SessionStore 按课堂/ID/revision/原文/token 校验，以字段合并写盘，避免两个译者携带旧整段快照覆盖彼此。每个课堂缓存一次最新文字索引（几千段），切换课堂重建；UI 仍仅保留 30 行，音频不变。新增字段均可选，旧 JSON 无需迁移。进程恢复清除未完成的请求占用，保留已有有效中文。导出依次选择真实 GPT 完成版、完整匹配本机版、明确 mock、缺失标记；保留本机兜底身份。
+
+诊断分别记录 partial、local 请求/结果/实际首次显示、Buffer stable、GPT 请求/首批/完成、实际可见替换与过期丢弃；没有显示过本机中文的 GPT 完成另记。分析脚本排除 mock 延迟。采集时间仍用 0.0.7 capture Date，不能用暂停后的音频秒数计算墙钟延迟。
 
 0.0.7：0.0.6 只修正顶部采集时长，字幕仍用墙钟时间，暂停恢复后两者不同。新课堂统一用串行音频写盘队列上累计 PCM 帧数产生 packet offset；Speech、音频索引、metadata、字幕、文字稿和 M4A 使用相同录音轴，暂停和系统未采集时段不增加位置。M4A 直接串接已保存 CAF；中断仍有诊断和缺口标记，不将无音频时段插成静音。实际 capture host-time 映射到 Date，通过稀疏锚点还原 Speech 范围的真实采集日期并随 final/segment 保存，测量 ASR/GPT 延迟时使用该日期，不能将录音秒数加 startedAt 冒充恢复后的墙钟。锚点时钟映射允许约 50 ms 误差；教师参考的端到端延迟仍须真机测量。每次音频关闭额外落盘累计秒数，恢复时不把暂停长度当作录音。metadata 可选 timeline 标记区分旧课堂：没有标记的 0.0.6 及更早记录继续使用原始墙钟轴和带空档 M4A，不自动迁移或破坏已有文字定位。
 

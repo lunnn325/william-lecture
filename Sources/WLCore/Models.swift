@@ -2,6 +2,7 @@ import Foundation
 
 public enum SessionState: String, Codable, Sendable { case recording, paused, stopped, interrupted, recovered }
 public enum TranslationStatus: String, Codable, Sendable { case pending, completed, mock, failed }
+public enum CaptionPhase: String, Sendable { case transcribing, localDraft, queuedForGPT, gptTranslating, final, failed, localOnly }
 public enum ExportLanguage: String, CaseIterable, Sendable { case english, chinese, bilingual }
 public enum SessionTimeline: String, Codable, Sendable { case recordedAudio }
 
@@ -52,6 +53,63 @@ public struct TranscriptSegment: Codable, Identifiable, Sendable, Equatable {
     public var completedAt: Date?
     public var attempts: Int
     public var error: String?
+    public var revision: Int?
+    public var partialFirstAt: Date?
+    public var localEnabled: Bool?
+    public var localChinese: String?
+    public var localSourceText: String?
+    public var localRevision: Int?
+    public var localFirstAt: Date?
+    public var localCompletedAt: Date?
+    public var localDisplayedAt: Date?
+    public var localAttemptedRevision: Int?
+    public var localRequestID: UUID?
+    public var localError: String?
+    public var gptRevision: Int?
+    public var gptRequestID: UUID?
+    public var gptDeferred: Bool?
+    public var sourceRevision: Int { max(1, revision ?? 1) }
+    public var validLocalChinese: String? {
+        guard localRevision == sourceRevision, CaptionSource.normalized(localSourceText ?? "") == CaptionSource.normalized(english),
+              let localChinese, !localChinese.isEmpty else { return nil }
+        return localChinese
+    }
+    public var finalChinese: String? {
+        status == .completed && (gptRevision ?? sourceRevision) == sourceRevision ? chinese : nil
+    }
+    public var displayChinese: String? { finalChinese ?? validLocalChinese ?? chinese }
+    public var exportChinese: String? { finalChinese ?? validLocalChinese ?? (status == .mock ? chinese : nil) }
+    public var phase: CaptionPhase {
+        if finalChinese != nil { return .final }
+        if validLocalChinese != nil && (status == .failed || gptDeferred == true || error != nil) { return .localOnly }
+        if status == .pending && submittedAt != nil && gptRequestID != nil { return .gptTranslating }
+        if validLocalChinese != nil { return .localDraft }
+        return status == .failed ? .failed : .queuedForGPT
+    }
+    /// Actor writes are authoritative; callbacks can arrive in the opposite order.
+    /// Merge display snapshots without ever writing an in-memory stream to disk.
+    public func mergingDisplay(_ prior: TranscriptSegment) -> TranscriptSegment {
+        guard id == prior.id else { return self }
+        if sourceRevision < prior.sourceRevision { return prior }
+        guard sourceRevision == prior.sourceRevision, english == prior.english else { return self }
+        var merged = self
+        if (prior.localCompletedAt ?? .distantPast) > (localCompletedAt ?? .distantPast) {
+            merged.localChinese = prior.localChinese; merged.localSourceText = prior.localSourceText
+            merged.localRevision = prior.localRevision; merged.localCompletedAt = prior.localCompletedAt
+        }
+        merged.localFirstAt = [localFirstAt, prior.localFirstAt].compactMap { $0 }.min()
+        merged.localDisplayedAt = [localDisplayedAt, prior.localDisplayedAt].compactMap { $0 }.min()
+        if (prior.finalChinese != nil && finalChinese == nil) ||
+            (prior.submittedAt ?? .distantPast) > (submittedAt ?? .distantPast) {
+            merged.chinese = prior.chinese; merged.status = prior.status; merged.error = prior.error
+            merged.gptRevision = prior.gptRevision; merged.gptRequestID = prior.gptRequestID
+            merged.submittedAt = prior.submittedAt; merged.firstTranslationAt = prior.firstTranslationAt
+            merged.completedAt = prior.completedAt; merged.attempts = prior.attempts
+        } else if status == .pending, error == nil, chinese == nil, gptRequestID == prior.gptRequestID {
+            merged.chinese = prior.chinese // retain a visible stream across a local-only callback
+        }
+        return merged
+    }
     public init(start: Double, end: Double, english: String, receivedAt: Date = Date()) {
         id = UUID(); self.start = max(0, start); self.end = max(start, end)
         self.english = english; self.receivedAt = receivedAt; status = .pending; attempts = 0
@@ -79,6 +137,10 @@ public struct SpeechPiece: Codable, Sendable, Equatable {
 /// The quiet timer is a batching timer, never evidence that a volatile result is final.
 public struct SentenceBuffer: Sendable {
     private var pieces: [SpeechPiece] = []
+    public private(set) var pendingID = UUID()
+    public var pendingText: String { pieces.map(\.text).joined(separator: " ") }
+    public var pendingStart: Double? { pieces.first?.start }
+    public var pendingEnd: Double? { pieces.last?.end }
     private var lastRangeEnd: Double = -1
     public let maxWords: Int
     public let quietSeconds: Double
@@ -106,6 +168,7 @@ public struct SentenceBuffer: Sendable {
         guard let first = pieces.first, let last = pieces.last else { return nil }
         var result = TranscriptSegment(start: first.start, end: last.end,
             english: pieces.map(\.text).joined(separator: " "), receivedAt: last.receivedAt)
+        result.id = pendingID; pendingID = UUID()
         result.audioEndedAt = last.audioEndedAt
         pieces.removeAll(keepingCapacity: true)
         return result

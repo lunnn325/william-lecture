@@ -58,6 +58,10 @@ public actor SessionStore {
     // Cache unresolved text for one active queue only. Journals remain authoritative on reopen.
     private var pendingSession: UUID?
     private var pendingIndex: [UUID: TranscriptSegment] = [:]
+    // One selected classroom, loaded once. This index merges concurrent translator field updates;
+    // it never replaces the incrementally written journal and is discarded on a classroom switch.
+    private var translationSession: UUID?
+    private var translationIndex: [UUID: TranscriptSegment] = [:]
     public nonisolated let root: URL
     public init(root: URL) {
         self.root = root
@@ -100,9 +104,91 @@ public actor SessionStore {
     }
     public func append(_ segment: TranscriptSegment, session: UUID) throws {
         try JSONLines.append(segment, to: folder(session).appendingPathComponent("transcript.jsonl"))
+        if translationSession == session { translationIndex[segment.id] = segment }
         if pendingSession == session {
             if segment.status == .pending || segment.status == .failed { pendingIndex[segment.id] = segment }
             else { pendingIndex.removeValue(forKey: segment.id) }
+        }
+    }
+    private func loadTranslationIndex(_ session: UUID) throws {
+        guard translationSession != session else { return }
+        var index: [UUID: TranscriptSegment] = [:]
+        try JSONLines.scan(TranscriptSegment.self, at: folder(session).appendingPathComponent("transcript.jsonl")) { index[$0.id] = $0 }
+        translationIndex = index; translationSession = session
+    }
+    public func translationSnapshot(_ source: TranscriptSegment, session: UUID) throws -> TranscriptSegment? {
+        try loadTranslationIndex(session)
+        guard let current = translationIndex[source.id], current.sourceRevision == source.sourceRevision,
+              current.english == source.english else { return nil }
+        return current
+    }
+    public func beginGPT(_ source: TranscriptSegment, session: UUID, request: UUID, at: Date) throws -> TranscriptSegment? {
+        guard !Task.isCancelled, var current = try translationSnapshot(source, session: session),
+              current.status == .pending || current.status == .failed else { return nil }
+        current.gptRequestID = request; current.gptRevision = current.sourceRevision
+        current.attempts += 1; current.submittedAt = at; current.firstTranslationAt = nil; current.completedAt = nil
+        current.chinese = nil; current.error = nil; current.status = .pending; current.gptDeferred = false
+        try append(current, session: session); return current
+    }
+    public func applyGPT(_ source: TranscriptSegment, session: UUID, request: UUID, status: TranslationStatus,
+                         chinese: String? = nil, firstAt: Date? = nil, completedAt: Date? = nil, error: String? = nil) throws -> TranscriptSegment? {
+        guard !Task.isCancelled, var current = try translationSnapshot(source, session: session), current.gptRequestID == request,
+              current.status == .pending else { return nil }
+        current.status = status; current.chinese = chinese; current.firstTranslationAt = firstAt
+        current.completedAt = completedAt; current.error = error
+        if status != .pending || error != nil { current.gptRequestID = nil }
+        try append(current, session: session); return current
+    }
+    public func cancelGPT(_ source: TranscriptSegment, session: UUID, request: UUID) throws -> TranscriptSegment? {
+        guard var current = try translationSnapshot(source, session: session), current.gptRequestID == request,
+              current.status == .pending else { return nil }
+        current.gptRequestID = nil; current.submittedAt = nil; current.chinese = nil; current.error = "翻译请求已取消"
+        try append(current, session: session); return current
+    }
+    public func localPending(_ session: UUID, newestFirst: Bool = false) throws -> TranscriptSegment? {
+        try loadTranslationIndex(session)
+        return translationIndex.values.filter {
+            $0.localEnabled == true && $0.validLocalChinese == nil && $0.finalChinese == nil && $0.localAttemptedRevision != $0.sourceRevision
+        }.sorted { newestFirst ? $0.start > $1.start : $0.start < $1.start }.first
+    }
+    public func beginLocal(_ source: TranscriptSegment, session: UUID, request: UUID) throws -> TranscriptSegment? {
+        guard !Task.isCancelled, var current = try translationSnapshot(source, session: session), current.localEnabled == true,
+              current.validLocalChinese == nil, current.finalChinese == nil, current.localAttemptedRevision != current.sourceRevision else { return nil }
+        current.localRequestID = request; current.localAttemptedRevision = current.sourceRevision; current.localError = nil
+        try append(current, session: session); return current
+    }
+    public func applyLocal(_ source: TranscriptSegment, session: UUID, request: UUID, chinese: String?, at: Date, error: String? = nil) throws -> TranscriptSegment? {
+        guard !Task.isCancelled, var current = try translationSnapshot(source, session: session), current.localRequestID == request else { return nil }
+        current.localError = error
+        current.localRequestID = nil
+        if let chinese, !chinese.isEmpty {
+            current.localChinese = chinese; current.localSourceText = current.english; current.localRevision = current.sourceRevision
+            current.localFirstAt = current.localFirstAt ?? at; current.localCompletedAt = at
+        }
+        try append(current, session: session); return current
+    }
+    public func cancelLocal(_ source: TranscriptSegment, session: UUID, request: UUID) throws {
+        guard var current = try translationSnapshot(source, session: session), current.localRequestID == request else { return }
+        current.localRequestID = nil; current.localAttemptedRevision = nil
+        try append(current, session: session)
+    }
+    public func resetLocalFailures(_ session: UUID) throws {
+        try loadTranslationIndex(session)
+        for var current in Array(translationIndex.values) where current.localEnabled == true && current.validLocalChinese == nil && current.finalChinese == nil {
+            current.localAttemptedRevision = nil; current.localRequestID = nil; current.localError = nil
+            try append(current, session: session)
+        }
+    }
+    public func markLocalDisplayed(_ source: TranscriptSegment, session: UUID, at: Date) throws {
+        guard var current = try translationSnapshot(source, session: session), current.localDisplayedAt == nil else { return }
+        current.localDisplayedAt = at; try append(current, session: session)
+    }
+    public func requeueGPT(_ session: UUID, includeMock: Bool) throws {
+        try loadTranslationIndex(session)
+        for var current in Array(translationIndex.values) where current.status == .failed || (includeMock && current.status == .mock) {
+            current.status = .pending; current.error = nil; current.gptRequestID = nil
+            current.chinese = nil; current.submittedAt = nil; current.completedAt = nil
+            try append(current, session: session)
         }
     }
     public func log(_ diagnostic: Diagnostic, session: UUID) throws {
@@ -141,6 +227,23 @@ public actor SessionStore {
         var issues: [String] = []
         let directories = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         let readable = try sessions()
+        // No provider tasks survive process death, including tasks left after Stop.
+        for saved in readable {
+            do {
+                for var segment in try segments(saved.id) {
+                    var changed = false
+                    if segment.localRequestID != nil {
+                        segment.localRequestID = nil
+                        if segment.validLocalChinese == nil && segment.localError == nil { segment.localAttemptedRevision = nil }
+                        changed = true
+                    }
+                    if segment.status == .pending && segment.gptRequestID != nil {
+                        segment.gptRequestID = nil; segment.submittedAt = nil; segment.chinese = nil; changed = true
+                    }
+                    if changed { try append(segment, session: saved.id) }
+                }
+            } catch { issues.append("课堂 \(saved.id) 翻译队列恢复不完整：\(error.localizedDescription)") }
+        }
         let readableIDs = Set(readable.map(\.id))
         for directory in directories {
             if let id = UUID(uuidString: directory.lastPathComponent), !readableIDs.contains(id) {
@@ -201,8 +304,10 @@ public actor SessionStore {
             lines.append("[\(Self.timestamp(record.start)) – \(Self.timestamp(record.end))]")
             if language != .chinese { lines.append(record.english) }
             if language != .english {
-                if record.status == .mock { lines.append("[MOCK / 模拟翻译，非真实中文] \(record.chinese ?? "")") }
-                else { lines.append(record.chinese ?? "[中文缺失：\(record.status.rawValue)]") }
+                if record.finalChinese != nil { lines.append(record.finalChinese!) }
+                else if let local = record.validLocalChinese { lines.append("[本机翻译 / GPT 未完成] \(local)") }
+                else if record.status == .mock { lines.append("[MOCK / 模拟翻译，非真实中文] \(record.chinese ?? "")") }
+                else { lines.append("[中文缺失：\(record.status.rawValue)]") }
             }
             lines.append("")
         }

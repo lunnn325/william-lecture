@@ -1,9 +1,11 @@
 import AVFoundation
 import SwiftUI
+import Translation
 import WLCore
 
 struct ValidationView: View {
     @EnvironmentObject private var controller: LectureController
+    @Environment(\.scenePhase) private var scenePhase
     @State private var settings = false
     var body: some View {
         NavigationStack {
@@ -35,6 +37,8 @@ struct ValidationView: View {
                     }
                     Button("重试英文转写") { Task { await controller.retrySpeech() } }.disabled(!controller.recording || controller.busy)
                     Text("中文：\(controller.translationStatus)")
+                    Text("本机：\(controller.localStatus)")
+                    Text("字幕状态：\(controller.captionStatus)").font(.caption).foregroundStyle(.secondary)
                     ProgressView(value: min(1, controller.peak)).accessibilityLabel("麦克风峰值")
                     Text(String(format: "收音平均 %.1f dBFS · 峰值 %.1f dBFS", controller.inputRMSDBFS, controller.inputPeakDBFS)).font(.caption)
                     if !controller.warning.isEmpty { Text(controller.warning).foregroundStyle(.red).textSelection(.enabled).accessibilityIdentifier("system-warning") }
@@ -45,7 +49,7 @@ struct ValidationView: View {
                 }
                 if !controller.visible.isEmpty {
                     Section("最近 30 段（完整内容已写盘）") {
-                        ForEach(controller.visible) { segment in SegmentRow(segment: segment) }
+                        ForEach(controller.visible) { segment in SegmentRow(segment: segment, chineseOverride: controller.captionChinese(segment)) }
                     }
                 }
                 Section("历史课堂") {
@@ -65,16 +69,18 @@ struct ValidationView: View {
             .navigationTitle("William Lecture")
             .toolbar { Button("设置") { settings = true }.disabled(controller.active) }
             .sheet(isPresented: $settings) { SettingsView().environmentObject(controller) }
+            .onChange(of: scenePhase) { _, phase in controller.setForeground(phase == .active) }
         }
     }
 }
 
 private struct SegmentRow: View {
     let segment: TranscriptSegment
+    var chineseOverride: String? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("\(SessionStore.timestamp(segment.start)) – \(SessionStore.timestamp(segment.end)) · \(segment.status.rawValue)").font(.caption).foregroundStyle(.secondary)
-            Text(segment.chinese ?? "[中文待处理]").textSelection(.enabled)
+            Text("\(SessionStore.timestamp(segment.start)) – \(SessionStore.timestamp(segment.end))").font(.caption).foregroundStyle(.secondary)
+            Text(chineseOverride ?? segment.displayChinese ?? "[中文待处理]").textSelection(.enabled)
             Text(segment.english).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
             if let error = segment.error { Text(error).font(.caption).foregroundStyle(.red) }
         }
@@ -86,9 +92,25 @@ private struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var key = ""
     @State private var replaceKey = false
+    @State private var preparation: TranslationSession.Configuration?
+    @State private var preparing = false
     var body: some View {
         NavigationStack {
             Form {
+                Section("本机中文快显 · 英文 → 简体中文") {
+                    Toggle("启用本机翻译", isOn: $controller.localEnabled)
+                    Text(controller.localStatus).font(.caption)
+                    Button("检查语言模型") { Task { await controller.checkLocalModels() } }.disabled(preparing || controller.active)
+                    Button("准备语言模型") {
+                        guard !controller.active else { return }
+                        preparing = true
+                        controller.localStatus = "准备中；请完成系统语言模型提示"
+                        if preparation == nil { preparation = AppleLocalTranslator.preparationConfiguration() }
+                        else { preparation?.invalidate() }
+                    }.disabled(preparing || controller.active || controller.mode == .mock)
+                    if preparing { ProgressView("准备本机模型…") }
+                    Text("录课前准备一次。录课期间只使用已安装模型；模型不可用时继续录音和 GPT。模拟模式使用假译者。关闭此开关恢复 GPT 字幕路径。").font(.caption)
+                }
                 Section("翻译") {
                     Picker("模式", selection: $controller.mode) { Text("模拟翻译").tag(TranslationMode.mock); Text("OpenAI").tag(TranslationMode.openAI) }
                     TextField("模型", text: $controller.model).textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -108,7 +130,17 @@ private struct SettingsView: View {
                     Text("音频分段保存为 16-bit PCM CAF；48 kHz 单声道约 330 MB/小时，立体声约两倍。强制退出、系统中断、磁盘耗尽可能产生缺口。V0 尚须真机长录验证。")
                 }
             }.navigationTitle("测试设置").toolbar {
-                Button("保存") { controller.saveSettings(key: replaceKey ? key : nil); key = ""; dismiss() }
+                Button("保存") { controller.saveSettings(key: replaceKey ? key : nil); key = ""; dismiss() }.disabled(preparing)
+            }
+            .task { await controller.checkLocalModels() }
+            .translationTask(preparation) { session in
+                guard !controller.active else { preparing = false; return }
+                do {
+                    try await session.prepareTranslation()
+                    if await session.isReady { await controller.checkLocalModels() }
+                    else { controller.localStatus = "模型尚未就绪；可稍后重新准备" }
+                } catch { controller.localStatus = "模型准备未完成：\(error.localizedDescription)" }
+                preparing = false
             }
         }
     }

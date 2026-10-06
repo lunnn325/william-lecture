@@ -16,6 +16,8 @@ import WLAppleAudio
     @Published var speechStatus = "未启动"
     @Published var speechError = ""
     @Published var translationStatus = "模拟模式"
+    @Published var localStatus = "尚未检查本机模型"
+    @Published var localEnabled = UserDefaults.standard.object(forKey: "localTranslationEnabled") as? Bool ?? true
     @Published var warning = ""
     var elapsed: Double { session?.recordingSeconds ?? 0 }
     private var timelineOffset: Double { session?.timelineOffset() ?? 0 }
@@ -31,6 +33,12 @@ import WLAppleAudio
     private var speech: SpeechService?
     private var speechPreparation: Task<Void, Never>?
     private var worker: TranslationWorker?
+    private var localWorker: LocalTranslationWorker?
+    private let localTranslator = AppleLocalTranslator()
+    private var drafts = CaptionDraftCoordinator()
+    private var previewChinese: [UUID: String] = [:]
+    private var focusedCaptionID: UUID?
+    private var foreground = true
     private var buffer = SentenceBuffer()
     private var bufferFlush: Task<Void, Never>?
     private var timer: Task<Void, Never>?
@@ -75,11 +83,13 @@ import WLAppleAudio
         UserDefaults.standard.set(mode.rawValue, forKey: "translationMode")
         UserDefaults.standard.set(model, forKey: "translationModel")
         UserDefaults.standard.set(locale, forKey: "speechLocale")
+        UserDefaults.standard.set(localEnabled, forKey: "localTranslationEnabled")
         if let key { do { try Keychain.save(key.trimmingCharacters(in: .whitespacesAndNewlines)) } catch { warning = error.localizedDescription } }
     }
     func start() async {
         guard !busy, !active else { return }; busy = true; defer { busy = false }
         await worker?.waitForCancellation(); worker = nil
+        await localWorker?.shutdown(); localWorker = nil
         interruptionTask?.cancel(); await interruptionTask?.value; interruptionTask = nil
         await persistence?.value
         do {
@@ -90,13 +100,14 @@ import WLAppleAudio
             try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: folder.path)
             session = next; visible = []; buffer = SentenceBuffer(); currentChinese = ""; volatileEnglish = ""; warning = ""; newestDisplayEnd = -1; interrupted = false; wantsRecovery = false
             finalCursor = FinalSpeechCursor(); lastSpeechResultAt = nil
+            drafts = CaptionDraftCoordinator(); previewChinese = [:]; focusedCaptionID = nil
             let recorder = AudioRecorder(); self.recorder = recorder
             recorder.onEvent = { [weak self] event in Task { @MainActor in
                 guard self?.session?.id == next.id else { return }
                 self?.handleAudio(event)
             } }
             try await recorder.start(directory: folder, origin: next.startedAt)
-            makeWorker(next)
+            makeWorker(next); makeLocalWorker(next)
             startSpeech(); startTimer(); await refreshHistory()
         } catch {
             warning = error.localizedDescription; audioStatus = "录音未开始"
@@ -109,7 +120,7 @@ import WLAppleAudio
         if recording {
             await recorder?.pause(); session?.state = .paused
             await snapshotRecordingDuration()
-            await finishSpeech(); flushBuffer(); await persistence?.value
+            await finishSpeech(); flushBuffer(); invalidateDraft(); await persistence?.value
             audioStatus = "已暂停；音频已保存"
             log("pause", gap: "用户课间暂停，未采集此时段音频")
         } else {
@@ -128,7 +139,7 @@ import WLAppleAudio
         await snapshotRecordingDuration()
         timer?.cancel(); timer = nil
         session?.state = .stopped // Reject late interruption events while draining Speech.
-        await finishSpeech(); flushBuffer(); await persistence?.value
+        await finishSpeech(); flushBuffer(); invalidateDraft(); await persistence?.value
         if var ended = session {
             ended.state = .stopped; ended.stoppedAt = stoppedAt
             ended.duration = ended.usesRecordingTimeline ? ended.recordingSeconds : stoppedAt.timeIntervalSince(ended.startedAt)
@@ -150,6 +161,7 @@ import WLAppleAudio
         }
     }
     private func startSpeech() {
+        invalidateDraft()
         let preparationStart = timelineOffset
         speechReadyAt = nil
         seenSpeechResult = false
@@ -179,6 +191,7 @@ import WLAppleAudio
         }
     }
     private func finishSpeech() async {
+        localWorker?.clearDraft()
         speechPreparation?.cancel()
         // Do not await a model download that might outlive cancellation. Prepared analyzers are drained.
         recorder?.onPacket = nil
@@ -199,9 +212,14 @@ import WLAppleAudio
             }
             if !final {
                 volatileEnglish = piece.text
+                if localEnabled && recording && foreground {
+                    drafts.replacePartial(piece); refreshDraft()
+                }
                 if Date().timeIntervalSince(lastPartialLog) >= 1 {
                     lastPartialLog = Date()
-                    log("speech_partial", offset: piece.end, fields: speechTiming(piece, session: session))
+                    var fields = speechTiming(piece, session: session)
+                    if let draft = drafts.current { fields["segment"] = draft.id.uuidString; fields["revision"] = "\(draft.revision)" }
+                    log("speech_partial", offset: piece.end, fields: fields)
                 }
             } else {
                 let previousEnd = finalCursor.end
@@ -210,22 +228,28 @@ import WLAppleAudio
                     log("speech_final_overlap", offset: piece.end, fields: ["previous_end": "\(previousEnd)", "range_start": "\(piece.start)"])
                 }
                 volatileEnglish = ""
+                drafts.acceptedFinal(piece)
                 enqueue { try await self.store.appendFinal(piece, session: session.id) }
                 log("speech_finalized", offset: piece.end, fields: speechTiming(piece, session: session))
                 if let segment = buffer.append(piece) { persistSegment(segment) }
+                refreshDraft()
                 scheduleBufferFlush()
             }
         }
     }
     private func persistSegment(_ segment: TranscriptSegment) {
         guard let id = session?.id else { return }
-        var segment = segment
+        if drafts.current == nil { focusedCaptionID = segment.id }
+        if localEnabled, let draft = drafts.current, draft.id == segment.id, let chinese = draft.chinese { previewChinese[segment.id] = chinese }
+        var segment = drafts.freeze(segment)
+        segment.localEnabled = localEnabled; segment.gptDeferred = worker == nil
         segment.queuedAt = Date()
         let emittedAt = segment.queuedAt!
         updateVisible(segment)
         enqueue {
             try await self.store.append(segment, session: id)
             self.worker?.kick()
+            self.localWorker?.kick()
             try await self.store.log(Diagnostic("buffer_emit", offset: segment.end, fields: ["segment": segment.id.uuidString, "english_final_to_emit_ms": "\(Int(emittedAt.timeIntervalSince(segment.receivedAt) * 1000))"], at: emittedAt), session: id)
         }
     }
@@ -236,7 +260,7 @@ import WLAppleAudio
             do { try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow))) }
             catch { return }
             guard !Task.isCancelled, let self else { return }
-            if let segment = self.buffer.flushIfQuiet(now: Date()) { self.persistSegment(segment) }
+            if let segment = self.buffer.flushIfQuiet(now: Date()) { self.persistSegment(segment); self.refreshDraft() }
         }
     }
     private func flushBuffer() {
@@ -245,23 +269,146 @@ import WLAppleAudio
     }
     private func makeWorker(_ session: LectureSession) {
         let config = TranslatorConfiguration(mock: mode == .mock, model: model, key: Keychain.load())
+        if !config.mock && (config.key?.isEmpty ?? true) {
+            worker = nil; translationStatus = "GPT 未配置；本机中文/英文/录音可继续"; return
+        }
         let worker = TranslationWorker(store: store, config: config, session: session)
-        worker.onUpdate = { [weak self] segment in
-            guard self?.session?.id == session.id else { return }
+        worker.onUpdate = { [weak self, weak worker] segment in
+            guard let worker, self?.worker === worker, self?.session?.id == session.id else { return }
             self?.updateVisible(segment)
         }
         worker.onState = { [weak self, weak worker] state in
             guard let worker, self?.worker === worker else { return }
             self?.translationStatus = state
         }
+        worker.hasDraft = { [weak self] id in self?.previewChinese[id] != nil }
         self.worker = worker
     }
     private func updateVisible(_ segment: TranscriptSegment) {
+        var segment = segment
+        let prior = visible.first(where: { $0.id == segment.id })
+        if let prior { segment = segment.mergingDisplay(prior) }
+        if segment.finalChinese != nil || segment.validLocalChinese != nil { previewChinese.removeValue(forKey: segment.id) }
         if let index = visible.firstIndex(where: { $0.id == segment.id }) { visible[index] = segment }
         else { visible.append(segment); visible.sort { $0.start < $1.start }; if visible.count > 30 { visible.removeFirst(visible.count - 30) } }
-        if segment.end >= newestDisplayEnd, let chinese = segment.chinese {
+        let inWindow = visible.contains(where: { $0.id == segment.id })
+        let primary = focusedCaptionID == segment.id || (focusedCaptionID == nil && segment.end >= newestDisplayEnd)
+        if primary, let chinese = captionChinese(segment) {
             newestDisplayEnd = segment.end; currentChinese = chinese
+        } else if primary && (segment.status == .failed || segment.error != nil) {
+            currentChinese = ""
         }
+        if foreground && inWindow && segment.validLocalChinese != nil && segment.localDisplayedAt == nil {
+            let at = Date(); segment.localDisplayedAt = at
+            if let index = visible.firstIndex(where: { $0.id == segment.id }) { visible[index].localDisplayedAt = at }
+            log("local_first_display", offset: segment.end, fields: ["segment": segment.id.uuidString, "revision": "\(segment.sourceRevision)",
+                "mock": "\(mode == .mock)", "partial_to_display_ms": "\(Int(max(0, at.timeIntervalSince(segment.partialFirstAt ?? segment.receivedAt)) * 1000))"])
+            let source = segment; let id = session!.id
+            enqueue { try await self.store.markLocalDisplayed(source, session: id, at: at) }
+        }
+        if foreground, segment.finalChinese != nil, prior?.finalChinese == nil, inWindow {
+            if let displayedAt = segment.localDisplayedAt {
+                log("caption_gpt_replaced", offset: segment.end, fields: ["segment": segment.id.uuidString,
+                    "revision": "\(segment.sourceRevision)", "primary": "\(primary)", "mock": "\(mode == .mock)",
+                    "local_to_gpt_ms": "\(Int(max(0, Date().timeIntervalSince(displayedAt)) * 1000))"])
+            } else {
+                log("caption_gpt_displayed", offset: segment.end, fields: ["segment": segment.id.uuidString, "local_shown": "false", "primary": "\(primary)"])
+            }
+        }
+        let retained = Set(visible.map(\.id)).union([buffer.pendingID])
+        previewChinese = previewChinese.filter { retained.contains($0.key) }
+    }
+    func captionChinese(_ segment: TranscriptSegment) -> String? {
+        segment.finalChinese ?? segment.validLocalChinese ?? previewChinese[segment.id] ?? segment.chinese
+    }
+    var captionStatus: String {
+        if let draft = drafts.current { return draft.phase.rawValue }
+        return visible.last?.phase.rawValue ?? "等待英文"
+    }
+    func checkLocalModels() async {
+        guard !active else { return }
+        if mode == .mock { localStatus = "MOCK 本机译者；仅测试调度，不验证 Apple 模型"; return }
+        localStatus = "正在检查英文 → 简体中文模型…"
+        switch await localTranslator.availability() {
+        case .installed: localStatus = "本机模型已安装，可开始录课"
+        case .supported: localStatus = "需要准备语言模型；请在录课前点击准备"
+        case .unsupported: localStatus = "此设备/系统不支持本机翻译；使用 GPT"
+        @unknown default: localStatus = "模型状态未知；使用 GPT"
+        }
+    }
+    private func makeLocalWorker(_ selected: LectureSession) {
+        guard localEnabled else { localStatus = "已关闭"; return }
+        let provider = localTranslator
+        let mock = mode == .mock
+        let local = LocalTranslationWorker(store: store, session: selected.id, mock: mock, operation: { text in
+            if mock { try await Task.sleep(for: .milliseconds(80)); return "[MOCK 本机] \(text)" }
+            return try await provider.translate(text)
+        }, cancelOperation: { if !mock { await provider.cancel() } })
+        local.onDraft = { [weak self, weak local] request, text, at in
+            guard let self, let local, self.localWorker === local, self.session?.id == request.sessionID,
+                  self.recording, self.foreground else { return .stale }
+            let first = self.drafts.current?.localFirstAt == nil
+            let accepted = self.drafts.accept(request, text: text, at: at)
+            guard accepted != .stale, let draft = self.drafts.current else { return .stale }
+            self.focusedCaptionID = draft.id; self.currentChinese = draft.chinese ?? self.currentChinese
+            self.localStatus = "本机中文已显示；等待稳定英文/GPT"
+            if first {
+                self.log("local_first_display", offset: draft.end, fields: ["segment": draft.id.uuidString,
+                    "revision": "\(draft.revision)", "acceptance": accepted.rawValue, "mock": "\(mock)",
+                    "partial_to_display_ms": "\(Int(max(0, at.timeIntervalSince(draft.firstPartialAt)) * 1000))"])
+            }
+            return accepted
+        }
+        local.onUpdate = { [weak self, weak local] segment in
+            guard let local, self?.localWorker === local, self?.session?.id == selected.id else { return }
+            self?.updateVisible(segment)
+        }
+        local.onState = { [weak self, weak local] state in
+            guard let local, self?.localWorker === local else { return }
+            self?.localStatus = state
+        }
+        localWorker = local; local.setForeground(foreground)
+        localStatus = mock ? "MOCK 本机译者" : "仅使用已安装模型；录课期间不下载"
+    }
+    private func refreshDraft() {
+        guard localEnabled else { return }
+        let previous = drafts.current?.id
+        drafts.refresh(buffer: buffer, finalizedEnd: finalCursor.end)
+        if let draft = drafts.current {
+            focusedCaptionID = draft.id
+            if let chinese = draft.chinese { currentChinese = chinese }
+            else if previous != draft.id { currentChinese = "" }
+            if recording && foreground, let id = session?.id, let request = drafts.request(session: id) { localWorker?.offer(request) }
+        } else {
+            localWorker?.clearDraft()
+            if let previous, focusedCaptionID == previous, !visible.contains(where: { $0.id == previous }) {
+                focusedCaptionID = visible.last?.id; currentChinese = visible.last.flatMap { captionChinese($0) } ?? ""
+            }
+        }
+    }
+    private func invalidateDraft() {
+        drafts.invalidate(); localWorker?.clearDraft()
+        if let focusedCaptionID, !visible.contains(where: { $0.id == focusedCaptionID }) {
+            self.focusedCaptionID = visible.last?.id; currentChinese = visible.last.flatMap { captionChinese($0) } ?? ""
+        }
+    }
+    func setForeground(_ value: Bool) {
+        guard foreground != value else { return }
+        foreground = value; localWorker?.setForeground(value)
+        if !value { invalidateDraft() }
+        else {
+            focusedCaptionID = visible.last?.id
+            // A result completed in the background was never actually displayed there.
+            for segment in visible { updateVisible(segment) }
+            refreshDraft()
+        }
+        log(value ? "caption_foreground" : "caption_background")
+    }
+    func retryLocalTranslation() async {
+        guard localEnabled, let selected = session else { return }
+        await localWorker?.shutdown(); localWorker = nil
+        do { try await store.resetLocalFailures(selected.id); makeLocalWorker(selected); localWorker?.kick() }
+        catch { localStatus = error.localizedDescription }
     }
     private func handleAudio(_ event: AudioRecorder.Event) {
         guard let session else { return }
@@ -308,7 +455,7 @@ import WLAppleAudio
             guard !Task.isCancelled, active, session?.id == id else { interruptionTask = nil; return }
             busy = true
             await snapshotRecordingDuration()
-            await finishSpeech(); flushBuffer(); await persistence?.value
+            await finishSpeech(); flushBuffer(); invalidateDraft(); await persistence?.value
             if let snapshot = self.session { try? await store.save(snapshot) }
             busy = false; interruptionTask = nil
             if wantsRecovery && interrupted { wantsRecovery = false; await pauseOrResume() }
@@ -350,10 +497,12 @@ import WLAppleAudio
         guard !active || selected.id == session?.id else { warning = "录音期间只能补当前课堂"; return }
         await worker?.waitForCancellation()
         do {
-            for var segment in try await store.segments(selected.id) where segment.status == .failed || (mode == .openAI && segment.status == .mock) {
-                segment.status = .pending; segment.error = nil; try await store.append(segment, session: selected.id)
-            }
+            try await store.requeueGPT(selected.id, includeMock: mode == .openAI)
             makeWorker(selected); worker?.kick()
+            await localWorker?.shutdown(); localWorker = nil
+            if localEnabled {
+                try await store.resetLocalFailures(selected.id); makeLocalWorker(selected); localWorker?.kick()
+            }
         } catch { warning = error.localizedDescription }
     }
     func cancelTranslations() { worker?.cancel() }
@@ -361,6 +510,7 @@ import WLAppleAudio
         guard !active, !busy else { throw WLFailure.message("请先停止录音并等待保存完成，再导出") }
         busy = true; defer { busy = false }
         await persistence?.value; await worker?.flushDiagnostics()
+        await localWorker?.flushDiagnostics()
         return (try await store.export(selected.id, language: language, markdown: markdown),
                 try await store.exportDiagnostics(selected.id))
     }
