@@ -282,7 +282,7 @@ struct StudySummaryNode: View {
                     Text(node.title).font(depth == 0 ? .headline : .subheadline.weight(.medium)).foregroundStyle(.primary)
                     Spacer(minLength: 12)
                     if let first = node.segmentIDs.first, let offset = times[first] { Text(SessionStore.readingTime(offset)).font(.caption).foregroundStyle(Color.williamSecondary) }
-                }
+                }.frame(minHeight: 44).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("summary-source-\(node.id)")
             if !node.body.isEmpty { Text(node.body).font(.body).lineSpacing(6) }
             ForEach(node.children) { child in StudySummaryNode(node: child, depth: depth + 1, times: times, jump: jump).padding(.leading, 12) }
@@ -308,14 +308,14 @@ struct MindMapBranch: View {
     let jump: ([UUID]) -> Void
     var body: some View {
         HStack(spacing: 16) {
-            Button { jump(node.segmentIDs) } label: { Text(node.title).font(.subheadline.weight(.medium)).foregroundStyle(.primary).frame(width: 180, alignment: .leading) }.buttonStyle(.plain).accessibilityIdentifier("map-source-\(node.id)")
+            Button { jump(node.segmentIDs) } label: { Text(node.title).font(.subheadline.weight(.medium)).foregroundStyle(.primary).frame(width: 180, alignment: .leading).frame(minHeight: 44).contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityIdentifier("map-source-\(node.id)")
             if !node.children.isEmpty {
                 Rectangle().fill(Color.williamAccent.opacity(0.2)).frame(width: 1)
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(node.children) { child in
                         VStack(alignment: .leading, spacing: 6) {
-                            Button { jump(child.segmentIDs) } label: { Text(child.title).font(.subheadline).foregroundStyle(.primary) }.buttonStyle(.plain)
-                            ForEach(child.children) { leaf in Button { jump(leaf.segmentIDs) } label: { Text(leaf.title).font(.caption).foregroundStyle(Color.williamSecondary) }.buttonStyle(.plain) }
+                            Button { jump(child.segmentIDs) } label: { Text(child.title).font(.subheadline).foregroundStyle(.primary).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle()) }.buttonStyle(.plain)
+                            ForEach(child.children) { leaf in Button { jump(leaf.segmentIDs) } label: { Text(leaf.title).font(.caption).foregroundStyle(Color.williamSecondary).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle()) }.buttonStyle(.plain) }
                         }.frame(width: 280, alignment: .leading)
                     }
                 }
