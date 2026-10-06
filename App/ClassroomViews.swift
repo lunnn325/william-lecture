@@ -7,12 +7,16 @@ struct WorkspaceCaption: Identifiable, Equatable {
     let start: Double
     let english: String
     let chinese: String?
+    let phase: CaptionPhase
+    let revision: Int
     var provisional = false
     init(_ segment: TranscriptSegment, chinese: String? = nil) {
         id = segment.id; start = segment.start; english = segment.english; self.chinese = chinese ?? segment.displayChinese
+        phase = segment.phase; revision = segment.sourceRevision
     }
     init(id: UUID, start: Double, english: String, chinese: String?, provisional: Bool) {
         self.id = id; self.start = start; self.english = english; self.chinese = chinese; self.provisional = provisional
+        phase = chinese == nil ? .transcribing : .localDraft; revision = 0
     }
 }
 struct NoteContext: Identifiable {

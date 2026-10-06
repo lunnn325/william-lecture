@@ -35,7 +35,7 @@ import UIKit
         play.tap(); capture(app, "detail")
         XCTAssertTrue(app.staticTexts["Review price ceiling"].exists)
         app.buttons["导出课堂"].tap()
-        app.switches["整节录音 · M4A"].tap(); app.switches["诊断文件"].tap()
+        enableSwitch("整节录音 · M4A", app: app); enableSwitch("诊断文件", app: app)
         app.buttons["生成导出文件"].tap()
         XCTAssertTrue(app.staticTexts["已准备 4 个文件"].waitForExistence(timeout: 40))
         capture(app, "export")
@@ -85,6 +85,12 @@ import UIKit
     private func selectTab(_ name: String, app: XCUIApplication) {
         let tab = app.tabBars.buttons[name]
         if tab.exists { tab.tap() } else { app.buttons[name].firstMatch.tap() }
+    }
+    private func enableSwitch(_ name: String, app: XCUIApplication) {
+        let row = app.switches[name].firstMatch
+        let control = row.switches.firstMatch
+        if control.exists { control.tap() } else { row.tap() }
+        XCTAssertEqual(row.value as? String, "1", "Export option must actually be enabled")
     }
     private func capture(_ app: XCUIApplication, _ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())

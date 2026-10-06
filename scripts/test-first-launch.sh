@@ -19,9 +19,10 @@ cleanup() { for device in "${devices[@]}"; do xcrun simctl shutdown "$device" >/
 trap cleanup EXIT
 run_flow() {
   local label="$1" type="$2" device result status=0
-  device=$(xcrun simctl create "WL-$label-${GITHUB_RUN_ID:-local}" "$type" "$runtime")
+  device=$(xcrun simctl create "WL-$label-${GITHUB_RUN_ID:-local}" "$type" "$runtime") || return $?
   devices+=("$device")
-  xcrun simctl boot "$device"; xcrun simctl bootstatus "$device" -b
+  xcrun simctl boot "$device" || return $?
+  xcrun simctl bootstatus "$device" -b || return $?
   result="build/$label.xcresult"
   local filter="-only-testing:WilliamLectureUITests"
   if [ "$label" = "TabletFlow" ]; then filter="-only-testing:WilliamLectureUITests/V1FlowTests"; fi
@@ -31,8 +32,10 @@ run_flow() {
     "$filter" CODE_SIGNING_ALLOWED=NO test | tee "build/$label.log" || status=$?
   mkdir -p "build/screenshots/$label"
   xcrun xcresulttool export attachments --path "$result" --output-path "build/screenshots/$label" || true
-  xcrun simctl shutdown "$device"
+  xcrun simctl shutdown "$device" || true
   return "$status"
 }
-run_flow FirstLaunch com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro
-run_flow TabletFlow "$tablet_type"
+phone_status=0; tablet_status=0
+run_flow FirstLaunch com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro || phone_status=$?
+run_flow TabletFlow "$tablet_type" || tablet_status=$?
+if [ "$phone_status" -ne 0 ] || [ "$tablet_status" -ne 0 ]; then exit 1; fi
