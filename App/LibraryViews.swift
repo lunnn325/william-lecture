@@ -78,6 +78,10 @@ struct LessonDetailView: View {
     private var filtered: [TranscriptSegment] {
         markedOnly ? segments.filter { s in notes.contains { $0.segmentID == s.id && ($0.marked || !$0.text.isEmpty) } } : segments
     }
+    private var unlinkedNotes: [LectureNote] {
+        let ids = Set(segments.map(\.id))
+        return notes.filter { ($0.segmentID == nil || !ids.contains($0.segmentID!)) && (!markedOnly || $0.marked || !$0.text.isEmpty) }
+    }
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -184,6 +188,21 @@ struct LessonDetailView: View {
         LazyVStack(alignment: .leading, spacing: 24) {
             ForEach(Array(filtered.dropFirst(page * 50).prefix(50))) { segment in
                 detailCaption(segment).id(segment.id)
+            }
+        }
+        if !unlinkedNotes.isEmpty {
+            Text("其他标记").font(.caption).foregroundStyle(Color.williamSecondary)
+            ForEach(unlinkedNotes) { note in
+                Button { noteContext = NoteContext(sessionID: session.id, note: note) } label: {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(SessionStore.readingTime(note.offset)).font(.caption).monospacedDigit().foregroundStyle(Color.williamSecondary)
+                        if !note.english.isEmpty { Text(note.english).font(.subheadline).foregroundStyle(Color.williamSecondary) }
+                        if !note.text.isEmpty { Text(note.text).foregroundStyle(.primary) }
+                        else { Image(systemName: "bookmark").foregroundStyle(Color.williamAccent) }
+                    }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+                }.buttonStyle(.plain).contextMenu {
+                    Button("从这里播放", systemImage: "play") { playback.seek(to: note.offset, resume: true) }.disabled(controller.active || !playback.ready)
+                }
             }
         }
         if filtered.count > 50 {
