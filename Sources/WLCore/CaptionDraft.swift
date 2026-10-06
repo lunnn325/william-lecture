@@ -39,6 +39,7 @@ public struct LiveCaption: Sendable {
     public var correctionFloor = 1
     public var localFirstAt: Date?
     public var localCompletedAt: Date?
+    public var localDisplayedAt: Date?
     public var phase: CaptionPhase { chinese == nil ? .transcribing : .localDraft }
 }
 
@@ -91,13 +92,17 @@ public struct CaptionDraftCoordinator: Sendable {
         if let current, current.id == segment.id {
             segment.revision = current.revision + (current.english == CaptionSource.normalized(segment.english) ? 0 : 1)
             segment.partialFirstAt = current.firstPartialAt; segment.localFirstAt = current.localFirstAt
-            segment.localDisplayedAt = current.localFirstAt
+            segment.localDisplayedAt = current.localDisplayedAt
             if current.localSource == CaptionSource.normalized(segment.english), let chinese = current.chinese {
                 segment.localChinese = chinese; segment.localSourceText = segment.english
                 segment.localRevision = segment.sourceRevision; segment.localCompletedAt = current.localCompletedAt
             }
         } else { segment.revision = 1 }
         return segment
+    }
+    public mutating func markDisplayed(id: UUID, at: Date) -> Bool {
+        guard var current, current.id == id, current.chinese != nil, current.localDisplayedAt == nil else { return false }
+        current.localDisplayedAt = at; self.current = current; return true
     }
     public mutating func invalidate() { volatile = nil; current = nil; epoch = UUID() }
 }

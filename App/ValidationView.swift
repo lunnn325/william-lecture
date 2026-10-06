@@ -26,6 +26,17 @@ struct ValidationView: View {
                 Section("当前字幕") {
                     if controller.mode == .mock { Text("MOCK · 仅测试链路，中文为模拟内容").foregroundStyle(.orange) }
                     Text(controller.currentChinese.isEmpty ? "等待中文…" : controller.currentChinese).font(.title3).textSelection(.enabled)
+                        .onAppear { controller.setPrimaryCaptionVisible(true) }
+                        .onDisappear { controller.setPrimaryCaptionVisible(false) }
+                        .onChange(of: controller.currentChinese) { _, _ in
+                            if let id = controller.captionReferenceID { controller.captionDidRender(id: id) }
+                        }
+                        .onChange(of: controller.captionReferenceID) { _, id in
+                            if let id { controller.captionDidRender(id: id) }
+                        }
+                        .onChange(of: controller.captionStatus) { _, _ in
+                            if let id = controller.captionReferenceID { controller.captionDidRender(id: id) }
+                        }
                     Text(controller.volatileEnglish.isEmpty ? (controller.visible.last?.english ?? "等待英文…") : controller.volatileEnglish)
                         .foregroundStyle(.secondary).textSelection(.enabled)
                 }
@@ -49,7 +60,12 @@ struct ValidationView: View {
                 }
                 if !controller.visible.isEmpty {
                     Section("最近 30 段（完整内容已写盘）") {
-                        ForEach(controller.visible) { segment in SegmentRow(segment: segment, chineseOverride: controller.captionChinese(segment)) }
+                        ForEach(controller.visible) { segment in
+                            SegmentRow(segment: segment, chineseOverride: controller.captionChinese(segment))
+                                .onAppear { controller.setRowVisible(segment.id, true) }
+                                .onDisappear { controller.setRowVisible(segment.id, false) }
+                                .onChange(of: segment) { _, _ in controller.captionDidRender(id: segment.id) }
+                        }
                     }
                 }
                 Section("历史课堂") {

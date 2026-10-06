@@ -77,7 +77,11 @@ public struct TranscriptSegment: Codable, Identifiable, Sendable, Equatable {
     public var finalChinese: String? {
         status == .completed && (gptRevision ?? sourceRevision) == sourceRevision ? chinese : nil
     }
-    public var displayChinese: String? { finalChinese ?? validLocalChinese ?? chinese }
+    public var displayChinese: String? {
+        if let finalChinese { return finalChinese }
+        if let validLocalChinese { return validLocalChinese }
+        return (status == .mock || (status == .pending && error == nil && (gptRevision ?? sourceRevision) == sourceRevision)) ? chinese : nil
+    }
     public var exportChinese: String? { finalChinese ?? validLocalChinese ?? (status == .mock ? chinese : nil) }
     public var phase: CaptionPhase {
         if finalChinese != nil { return .final }

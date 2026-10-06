@@ -6,16 +6,17 @@ private actor LocalProbe {
     private var active = 0
     private var maximum = 0
     private var sources: [String] = []
+    private var starts: [Date] = []
     private var gates: [CheckedContinuation<Void, Never>] = []
     let gated: Bool
     init(gated: Bool = false) { self.gated = gated }
     func translate(_ text: String) async -> String {
-        active += 1; maximum = max(maximum, active); sources.append(text)
+        active += 1; maximum = max(maximum, active); sources.append(text); starts.append(Date())
         if gated { await withCheckedContinuation { gates.append($0) } }
         active -= 1; return "本机：\(text)"
     }
     func release() { let pending = gates; gates = []; for gate in pending { gate.resume() } }
-    func snapshot() -> (maximum: Int, sources: [String]) { (maximum, sources) }
+    func snapshot() -> (maximum: Int, sources: [String], starts: [Date]) { (maximum, sources, starts) }
 }
 private actor LateDeltaProbe {
     var callback: (@Sendable (String) async -> Void)?
@@ -98,6 +99,7 @@ final class HybridTranslationTests: XCTestCase {
         var drafts = CaptionDraftCoordinator(); var buffer = SentenceBuffer(); let classroom = UUID()
         drafts.replacePartial(partial("the cost")); drafts.refresh(buffer: buffer, finalizedEnd: -1)
         let prefix = try XCTUnwrap(drafts.request(session: classroom)); _ = drafts.accept(prefix, text: "成本", at: Date())
+        XCTAssertTrue(drafts.markDisplayed(id: prefix.captionID, at: Date()))
         let final = partial("the cost is 12 percent.", end: 2)
         drafts.acceptedFinal(final)
         let stable = drafts.freeze(try XCTUnwrap(buffer.append(final)))
@@ -109,6 +111,19 @@ final class HybridTranslationTests: XCTestCase {
         let reused = exactDrafts.freeze(try XCTUnwrap(exactBuffer.append(final)))
         XCTAssertEqual(reused.validLocalChinese, "成本为12%。")
         XCTAssertEqual(reused.id, exact.captionID); XCTAssertEqual(reused.localRevision, reused.sourceRevision)
+    }
+    func testLocalResultIsNotCountedAsDisplayUntilCaptionRenders() throws {
+        var drafts = CaptionDraftCoordinator(); let buffer = SentenceBuffer(); let classroom = UUID()
+        drafts.replacePartial(partial("twelve percent")); drafts.refresh(buffer: buffer, finalizedEnd: -1)
+        let source = try XCTUnwrap(drafts.request(session: classroom))
+        let resultAt = Date(); _ = drafts.accept(source, text: "12%", at: resultAt)
+        XCTAssertNotNil(drafts.current?.localFirstAt); XCTAssertNil(drafts.current?.localDisplayedAt)
+        let displayAt = resultAt.addingTimeInterval(1)
+        XCTAssertTrue(drafts.markDisplayed(id: source.captionID, at: displayAt))
+        XCTAssertFalse(drafts.markDisplayed(id: source.captionID, at: displayAt.addingTimeInterval(1)))
+        XCTAssertEqual(drafts.current?.localDisplayedAt, displayAt)
+        let stable = drafts.freeze(TranscriptSegment(start: 0, end: 1, english: "twelve percent"))
+        XCTAssertNil(stable.localDisplayedAt, "An unrelated ID must not inherit timing")
     }
     func testConcurrentFieldMergesPreserveBothTranslatorsInEitherCompletionOrder() async throws {
         let (root, store, classroom) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
@@ -206,6 +221,8 @@ final class HybridTranslationTests: XCTestCase {
         XCTAssertEqual(base.mergingDisplay(merged).validLocalChinese, "本机")
         var revised = base; revised.revision = 2; revised.english = "new source"
         XCTAssertEqual(final.mergingDisplay(revised).english, "new source")
+        final.revision = 2; final.gptRevision = 1
+        XCTAssertNil(final.displayChinese); XCTAssertNil(final.exportChinese)
     }
     @MainActor func testGPTStreamsOnlyWithoutFullLocalOrPrefixDraftThenReplacesOnce() async throws {
         let (root, store, classroom) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
@@ -258,7 +275,10 @@ final class HybridTranslationTests: XCTestCase {
         await fulfillment(of: [output], timeout: 3)
         try await Task.sleep(for: .milliseconds(100)); await local.shutdown(); await local.flushDiagnostics()
         let observed = await probe.snapshot(); XCTAssertEqual(observed.maximum, 1)
-        XCTAssertGreaterThanOrEqual(observed.sources.count, 2); XCTAssertLessThan(observed.sources.count, 10)
+        XCTAssertGreaterThanOrEqual(observed.sources.count, 2); XCTAssertLessThan(observed.sources.count, 30)
+        for pair in zip(observed.starts, observed.starts.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(pair.1.timeIntervalSince(pair.0), 0.055, "Draft rate limit must hold despite CI timer delays")
+        }
         XCTAssertEqual(observed.sources.last, "prefix 29")
     }
     @MainActor func testBackgroundSuppressesPartialsAndFairQueueDrainsStableSegments() async throws {

@@ -227,6 +227,7 @@ public actor SessionStore {
         var issues: [String] = []
         let directories = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         let readable = try sessions()
+        var damagedTranscripts: Set<UUID> = []
         // No provider tasks survive process death, including tasks left after Stop.
         for saved in readable {
             do {
@@ -242,7 +243,10 @@ public actor SessionStore {
                     }
                     if changed { try append(segment, session: saved.id) }
                 }
-            } catch { issues.append("课堂 \(saved.id) 翻译队列恢复不完整：\(error.localizedDescription)") }
+            } catch {
+                damagedTranscripts.insert(saved.id)
+                issues.append("课堂 \(saved.id) 翻译队列恢复不完整：\(error.localizedDescription)；原文件保留")
+            }
         }
         let readableIDs = Set(readable.map(\.id))
         for directory in directories {
@@ -251,6 +255,7 @@ public actor SessionStore {
             }
         }
         for var session in readable where [.recording, .paused, .interrupted].contains(session.state) {
+            guard !damagedTranscripts.contains(session.id) else { continue }
             do {
             session.state = .recovered
             // Include the current chunk even if the app died before its close event.

@@ -38,6 +38,9 @@ import WLAppleAudio
     private var drafts = CaptionDraftCoordinator()
     private var previewChinese: [UUID: String] = [:]
     private var focusedCaptionID: UUID?
+    private var primaryCaptionVisible = false
+    private var renderedRows: Set<UUID> = []
+    private var displayedFinalIDs: Set<UUID> = []
     private var foreground = true
     private var buffer = SentenceBuffer()
     private var bufferFlush: Task<Void, Never>?
@@ -101,6 +104,7 @@ import WLAppleAudio
             session = next; visible = []; buffer = SentenceBuffer(); currentChinese = ""; volatileEnglish = ""; warning = ""; newestDisplayEnd = -1; interrupted = false; wantsRecovery = false
             finalCursor = FinalSpeechCursor(); lastSpeechResultAt = nil
             drafts = CaptionDraftCoordinator(); previewChinese = [:]; focusedCaptionID = nil
+            renderedRows = []; displayedFinalIDs = []
             let recorder = AudioRecorder(); self.recorder = recorder
             recorder.onEvent = { [weak self] event in Task { @MainActor in
                 guard self?.session?.id == next.id else { return }
@@ -291,35 +295,53 @@ import WLAppleAudio
         if segment.finalChinese != nil || segment.validLocalChinese != nil { previewChinese.removeValue(forKey: segment.id) }
         if let index = visible.firstIndex(where: { $0.id == segment.id }) { visible[index] = segment }
         else { visible.append(segment); visible.sort { $0.start < $1.start }; if visible.count > 30 { visible.removeFirst(visible.count - 30) } }
-        let inWindow = visible.contains(where: { $0.id == segment.id })
         let primary = focusedCaptionID == segment.id || (focusedCaptionID == nil && segment.end >= newestDisplayEnd)
         if primary, let chinese = captionChinese(segment) {
             newestDisplayEnd = segment.end; currentChinese = chinese
         } else if primary && (segment.status == .failed || segment.error != nil) {
             currentChinese = ""
         }
-        if foreground && inWindow && segment.validLocalChinese != nil && segment.localDisplayedAt == nil {
-            let at = Date(); segment.localDisplayedAt = at
-            if let index = visible.firstIndex(where: { $0.id == segment.id }) { visible[index].localDisplayedAt = at }
-            log("local_first_display", offset: segment.end, fields: ["segment": segment.id.uuidString, "revision": "\(segment.sourceRevision)",
-                "mock": "\(mode == .mock)", "partial_to_display_ms": "\(Int(max(0, at.timeIntervalSince(segment.partialFirstAt ?? segment.receivedAt)) * 1000))"])
-            let source = segment; let id = session!.id
-            enqueue { try await self.store.markLocalDisplayed(source, session: id, at: at) }
-        }
-        if foreground, segment.finalChinese != nil, prior?.finalChinese == nil, inWindow {
-            if let displayedAt = segment.localDisplayedAt {
-                log("caption_gpt_replaced", offset: segment.end, fields: ["segment": segment.id.uuidString,
-                    "revision": "\(segment.sourceRevision)", "primary": "\(primary)", "mock": "\(mode == .mock)",
-                    "local_to_gpt_ms": "\(Int(max(0, Date().timeIntervalSince(displayedAt)) * 1000))"])
-            } else {
-                log("caption_gpt_displayed", offset: segment.end, fields: ["segment": segment.id.uuidString, "local_shown": "false", "primary": "\(primary)"])
-            }
-        }
         let retained = Set(visible.map(\.id)).union([buffer.pendingID])
         previewChinese = previewChinese.filter { retained.contains($0.key) }
+        renderedRows.formIntersection(retained); displayedFinalIDs.formIntersection(retained)
     }
     func captionChinese(_ segment: TranscriptSegment) -> String? {
-        segment.finalChinese ?? segment.validLocalChinese ?? previewChinese[segment.id] ?? segment.chinese
+        segment.finalChinese ?? segment.validLocalChinese ?? previewChinese[segment.id] ?? segment.displayChinese
+    }
+    var captionReferenceID: UUID? { focusedCaptionID ?? visible.last?.id }
+    func setPrimaryCaptionVisible(_ value: Bool) {
+        primaryCaptionVisible = value
+        if value, let id = captionReferenceID { captionDidRender(id: id) }
+    }
+    func setRowVisible(_ id: UUID, _ value: Bool) {
+        if value { renderedRows.insert(id); captionDidRender(id: id) }
+        else { renderedRows.remove(id) }
+    }
+    /// Called by visible SwiftUI captions, rather than by model completion callbacks.
+    func captionDidRender(id: UUID) {
+        let primary = captionReferenceID == id && primaryCaptionVisible
+        guard foreground, primary || renderedRows.contains(id) else { return }
+        let at = Date()
+        if let draft = drafts.current, draft.id == id, drafts.markDisplayed(id: id, at: at) {
+            log("local_first_display", offset: draft.end, fields: ["segment": id.uuidString,
+                "revision": "\(draft.revision)", "mock": "\(mode == .mock)",
+                "partial_to_display_ms": "\(Int(max(0, at.timeIntervalSince(draft.firstPartialAt)) * 1000))"])
+        }
+        guard let index = visible.firstIndex(where: { $0.id == id }), let classroom = session?.id else { return }
+        var segment = visible[index]
+        if segment.finalChinese == nil && (segment.validLocalChinese != nil || previewChinese[id] != nil) && segment.localDisplayedAt == nil {
+            segment.localDisplayedAt = at; visible[index] = segment
+            log("local_first_display", offset: segment.end, fields: ["segment": id.uuidString, "revision": "\(segment.sourceRevision)",
+                "mock": "\(mode == .mock)", "partial_to_display_ms": "\(Int(max(0, at.timeIntervalSince(segment.partialFirstAt ?? segment.receivedAt)) * 1000))"])
+            let source = segment; enqueue { try await self.store.markLocalDisplayed(source, session: classroom, at: at) }
+        }
+        if segment.finalChinese != nil, displayedFinalIDs.insert(id).inserted {
+            var fields = ["segment": id.uuidString, "revision": "\(segment.sourceRevision)", "primary": "\(primary)", "mock": "\(mode == .mock)"]
+            if let displayed = segment.localDisplayedAt {
+                fields["local_to_gpt_ms"] = "\(Int(max(0, at.timeIntervalSince(displayed)) * 1000))"
+                log("caption_gpt_replaced", offset: segment.end, fields: fields)
+            } else { fields["local_shown"] = "false"; log("caption_gpt_displayed", offset: segment.end, fields: fields) }
+        }
     }
     var captionStatus: String {
         if let draft = drafts.current { return draft.phase.rawValue }
@@ -347,16 +369,10 @@ import WLAppleAudio
         local.onDraft = { [weak self, weak local] request, text, at in
             guard let self, let local, self.localWorker === local, self.session?.id == request.sessionID,
                   self.recording, self.foreground else { return .stale }
-            let first = self.drafts.current?.localFirstAt == nil
             let accepted = self.drafts.accept(request, text: text, at: at)
             guard accepted != .stale, let draft = self.drafts.current else { return .stale }
             self.focusedCaptionID = draft.id; self.currentChinese = draft.chinese ?? self.currentChinese
             self.localStatus = "本机中文已显示；等待稳定英文/GPT"
-            if first {
-                self.log("local_first_display", offset: draft.end, fields: ["segment": draft.id.uuidString,
-                    "revision": "\(draft.revision)", "acceptance": accepted.rawValue, "mock": "\(mock)",
-                    "partial_to_display_ms": "\(Int(max(0, at.timeIntervalSince(draft.firstPartialAt)) * 1000))"])
-            }
             return accepted
         }
         local.onUpdate = { [weak self, weak local] segment in
@@ -401,6 +417,8 @@ import WLAppleAudio
             // A result completed in the background was never actually displayed there.
             for segment in visible { updateVisible(segment) }
             refreshDraft()
+            if let id = captionReferenceID { captionDidRender(id: id) }
+            for id in renderedRows { captionDidRender(id: id) }
         }
         log(value ? "caption_foreground" : "caption_background")
     }
