@@ -72,4 +72,23 @@ final class LessonContentTests: XCTestCase {
         XCTAssertNotEqual(LessonAPI.protectedTokens("1.25 USD"), LessonAPI.protectedTokens("1.52 USD"))
         XCTAssertTrue(CourseProfiles.context("FINN3001").contains("np.arange"))
     }
+    func testStoppedReconciliationSupersedesOrphanAndSurvivesRestart() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(root: root)
+        var session = LectureSession(course: "ECON1111"); session.state = .stopped
+        try await store.save(session)
+        let source = TranscriptSegment(start: 0, end: 2, english: "A tax changes incentives.")
+        try await store.append(source, session: session.id)
+        let token = UUID()
+        let orphan = try await store.beginGPT(source, session: session.id, request: token, at: Date())
+        XCTAssertNotNil(orphan)
+        let reopened = SessionStore(root: root); _ = try await reopened.recover()
+        try await reopened.repairTranslation(source, chinese: "税收改变激励。", session: session.id)
+        let stale = try await reopened.applyGPT(orphan!, session: session.id, request: token, status: .completed, chinese: "旧译文")
+        XCTAssertNil(stale)
+        let final = try await reopened.segments(session.id)
+        XCTAssertEqual(final.first?.finalChinese, "税收改变激励。")
+        XCTAssertNil(final.first?.gptRequestID)
+    }
 }

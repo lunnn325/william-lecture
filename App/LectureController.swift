@@ -131,8 +131,8 @@ import WLAppleAudio
         if isUIFixture { await startUIFixture(); return }
         #endif
         processing.setRecording(true)
-        await worker?.waitForCancellation(); worker = nil
-        await localWorker?.shutdown(); localWorker = nil
+        let previousWorker = worker, previousLocalWorker = localWorker
+        previousWorker?.cancel(); worker = nil; localWorker = nil
         interruptionTask?.cancel(); await interruptionTask?.value; interruptionTask = nil
         await persistence?.value
         do {
@@ -157,13 +157,18 @@ import WLAppleAudio
             } }
             connectSpeechInput()
             try await recorder.start(directory: folder, origin: next.startedAt)
+            // The microphone is already writing while old AI requests drain.
+            startSpeech(); startTimer()
+            await previousWorker?.waitForCancellation()
+            await previousLocalWorker?.shutdown()
             makeWorker(next); makeLocalWorker(next)
-            startSpeech(); startTimer(); await refreshHistory()
+            await refreshHistory()
         } catch {
             warning = error.localizedDescription; audioStatus = "录音未开始"
             if var failed = session { failed.state = .stopped; failed.stoppedAt = Date(); session = failed; try? await store.save(failed) }
             await recorder?.stop(); recorder = nil
             await finishSpeech(); processing.setRecording(false)
+            await previousWorker?.waitForCancellation(); await previousLocalWorker?.shutdown()
         }
     }
     func pauseOrResume() async {
