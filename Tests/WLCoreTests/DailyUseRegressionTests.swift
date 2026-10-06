@@ -58,14 +58,19 @@ final class DailyUseRegressionTests: XCTestCase {
     }
     @MainActor func testEmptyLocalFragmentDoesNotDisableSubsequentSentences() async throws {
         let (root, store, session) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        var sources: [TranscriptSegment] = []
         for (index, english) in ["Leon?", "What are you doing?"].enumerated() {
             var source = TranscriptSegment(start: Double(index), end: Double(index + 1), english: english)
-            source.localEnabled = true; source.gptDeferred = true; try await store.append(source, session: session.id)
+            source.localEnabled = true; source.gptDeferred = true; sources.append(source)
         }
+        try await store.append(sources[0], session: session.id)
         let worker = LocalTranslationWorker(store: store, session: session.id,
             operation: { $0 == "Leon?" ? "" : "你在做什么？" })
         let done = expectation(description: "Local provider continues after an empty fragment")
-        worker.onUpdate = { if $0.validLocalChinese != nil { done.fulfill() } }
+        let failed = expectation(description: "The empty fragment is processed first")
+        worker.onUpdate = { if $0.validLocalChinese != nil { done.fulfill() }; if $0.localError != nil { failed.fulfill() } }
+        worker.kick(); await fulfillment(of: [failed], timeout: 3)
+        try await store.append(sources[1], session: session.id)
         worker.kick(); await fulfillment(of: [done], timeout: 3); await worker.shutdown(); await worker.flushDiagnostics()
         let saved = try await store.segments(session.id)
         XCTAssertNotNil(saved[0].localError); XCTAssertEqual(saved[1].validLocalChinese, "你在做什么？")
