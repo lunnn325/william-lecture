@@ -12,8 +12,9 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    runs-on: macos-26
-    timeout-minutes: 30
+    # Standard public runner (14 GB RAM), not a paid larger runner.
+    runs-on: macos-26-intel
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode 26.5
@@ -29,8 +30,6 @@ jobs:
           echo "$PWD/.tools/xcodegen/bin" >> "$GITHUB_PATH"
       - name: Test core and build unsigned IPA
         run: bash scripts/build-ios.sh
-      - name: Verify fresh install and V1 phone/tablet flows
-        run: bash scripts/test-first-launch.sh
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
@@ -38,6 +37,9 @@ jobs:
           path: dist/WilliamLecture-V1-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
+      - name: Verify fresh install and V1 phone/tablet flows
+        timeout-minutes: 35
+        run: bash scripts/test-first-launch.sh
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
