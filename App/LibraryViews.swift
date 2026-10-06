@@ -379,23 +379,31 @@ struct ExportView: View {
                     Toggle("诊断文件", isOn: $diagnostics)
                     Text("笔记独立成文件；诊断用于检查延迟或故障。所有文件均为生成时的快照。").font(.footnote).foregroundStyle(Color.williamSecondary)
                 }.disabled(working)
-                Section {
-                    Button(working ? "正在准备文件…" : "生成导出文件") { generate() }.disabled(working || controller.active || controller.busy)
-                    if working { ProgressView("音频较长时需要一些时间…"); Button("取消导出") { task?.cancel() } }
-                    if !files.isEmpty {
-                        Button { sharing = true } label: { Label("分享 / 保存到文件", systemImage: "square.and.arrow.up") }.disabled(working)
-                        Text("已准备 \(files.count) 个文件").font(.caption).foregroundStyle(Color.williamSecondary)
-                    }
-                    if !error.isEmpty { Text(error).foregroundStyle(Color.williamWarning).font(.footnote) }
-                    if controller.active { Text("请先结束录课，等待保存完成后再导出。").font(.footnote).foregroundStyle(Color.williamSecondary) }
-                }
             }
+                .safeAreaInset(edge: .bottom, spacing: 0) { exportActions }
                 .navigationTitle("导出课堂").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { task?.cancel(); dismiss() } } }
                 .sheet(isPresented: $sharing) { ActivityShareView(files: files) }
                 .onChange(of: exportChoice) { _, _ in files = []; error = "" }
                 .onDisappear { task?.cancel() }
         }
+    }
+    private var exportActions: some View {
+        VStack(spacing: 8) {
+            Button(working ? "正在准备文件…" : "生成导出文件") { generate() }
+                .frame(maxWidth: .infinity, minHeight: 44).buttonStyle(.borderedProminent)
+                .disabled(working || controller.active || controller.busy)
+            if working {
+                HStack { ProgressView(); Text("正在导出").font(.footnote); Spacer(); Button("取消") { task?.cancel() }.accessibilityLabel("取消导出") }
+            }
+            if !files.isEmpty {
+                Button { sharing = true } label: { Label("分享 / 保存到文件", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity, minHeight: 44) }
+                    .buttonStyle(.bordered).disabled(working)
+                Text("已准备 \(files.count) 个文件").font(.caption).foregroundStyle(Color.williamSecondary)
+            }
+            if !error.isEmpty { Text(error).foregroundStyle(Color.williamWarning).font(.footnote) }
+            if controller.active { Text("请先结束录课，等待保存完成后再导出。").font(.footnote).foregroundStyle(Color.williamSecondary) }
+        }.padding(.horizontal, 20).padding(.vertical, 12).background(.bar)
     }
     private func generate() {
         guard !working else { return }; working = true; files = []; error = ""
