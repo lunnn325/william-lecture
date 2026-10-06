@@ -234,7 +234,10 @@ struct WorkspaceView: View {
                 Rectangle().fill(Color.williamSecondary.opacity(0.15)).frame(height: 0.5)
             }
             if controller.active {
-                HStack(spacing: 28) { pauseButton; stopButton; noteButton }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 28) { pauseButton; stopButton; noteButton }
+                    HStack(spacing: 12) { pauseButton; stopButton; noteButton }
+                }
             } else {
                 Button { Task { await controller.start(); UIImpactFeedbackGenerator(style: .light).impactOccurred() } } label: {
                     Group {
@@ -302,9 +305,9 @@ struct WorkspaceView: View {
             }
             .accessibilityAction(named: "标记此句") { Task { await controller.toggleMark(caption) } }
             .accessibilityAction(named: "写笔记") { editNote(caption) }
-            .onAppear { controller.setRowVisible(caption.id, true) }
+            .onAppear { controller.setRowVisible(caption.id, true); controller.captionDidRender(id: caption.id, english: caption.english) }
             .onDisappear { controller.setRowVisible(caption.id, false) }
-            .onChange(of: caption) { _, _ in controller.captionDidRender(id: caption.id) }
+            .onChange(of: caption) { _, _ in controller.captionDidRender(id: caption.id, english: caption.english) }
     }
     private func editNote(_ caption: WorkspaceCaption) {
         guard let id = controller.session?.id else { return }

@@ -26,6 +26,19 @@ public struct DraftTranslationRequest: Sendable, Equatable {
 
 public enum DraftAcceptance: String, Sendable { case exact, prefix, stale }
 
+/// Display-only English. Apple hypotheses can overlap finalized audio; show the
+/// latest hypothesis intact rather than waiting for a safe translation boundary.
+/// This never changes the finalized buffer, revision checks or transcript journal.
+public enum LiveEnglishPreview {
+    public static func text(partial: SpeechPiece?, buffer: SentenceBuffer, finalizedEnd: Double) -> String? {
+        guard let partial, partial.end > finalizedEnd + 0.001 else { return nil }
+        let text = CaptionSource.normalized(partial.text)
+        guard !text.isEmpty else { return nil }
+        guard let end = buffer.pendingEnd, end <= partial.start + 0.001 else { return text }
+        return CaptionSource.normalized([buffer.pendingText, text].filter { !$0.isEmpty }.joined(separator: " "))
+    }
+}
+
 public struct LiveCaption: Sendable {
     public let id: UUID
     public var revision: Int

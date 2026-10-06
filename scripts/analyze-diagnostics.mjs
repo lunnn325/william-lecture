@@ -16,6 +16,8 @@ const report = {
   note: 'Speech uses Apple audio ranges and local receipt times; this is not teacher-reference ground truth. Mock translations are excluded. First Speech result is measured per analyzer run.',
   first_english_from_range_start: stats('speech_first_result', 'range_start_to_receipt_ms'),
   partial_english_after_range_end: stats('speech_partial', 'end_to_receipt_ms'),
+  english_preview_after_receipt: stats('english_preview_display', 'receipt_to_display_ms', true),
+  english_preview_after_audio_end: stats('english_preview_display', 'audio_end_to_display_ms', true),
   stable_english_after_range_end: stats('speech_finalized', 'end_to_receipt_ms'),
   buffer_after_final_receipt: stats('buffer_emit', 'english_final_to_emit_ms'),
   translation_queue_after_buffer: stats('translation_request', 'queue_ms', true),

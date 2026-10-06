@@ -134,7 +134,11 @@ private final class SpeechInputBridge: @unchecked Sendable {
     private var warmedAnalyzer: SpeechAnalyzer?
     private var warmedLocale: String?
     private let mayInstall: Bool
-    init(mayInstall: Bool = false) { self.mayInstall = mayInstall }
+    private let realtime: Bool
+    private var reportingOptions: Set<SpeechTranscriber.ReportingOption> {
+        realtime ? [.volatileResults, .fastResults] : [.volatileResults]
+    }
+    init(mayInstall: Bool = false, realtime: Bool = true) { self.mayInstall = mayInstall; self.realtime = realtime }
     static func prepareAssets(localeIdentifier: String) async throws {
         let service = SpeechService(mayInstall: true)
         let locale = Locale(identifier: localeIdentifier)
@@ -162,7 +166,7 @@ private final class SpeechInputBridge: @unchecked Sendable {
             do {
                 guard SpeechTranscriber.isAvailable,
                       let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: localeIdentifier)) else { return }
-                let module = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults], attributeOptions: [.audioTimeRange])
+                let module = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: reportingOptions, attributeOptions: [.audioTimeRange])
                 guard await AssetInventory.status(forModules: [module]) == .installed,
                       let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]) else { return }
                 let analyzer = SpeechAnalyzer(modules: [module])
@@ -177,15 +181,21 @@ private final class SpeechInputBridge: @unchecked Sendable {
         if warmedLocale == localeIdentifier, let module = warmedModule, let format = warmedFormat, let prepared = warmedAnalyzer {
             warmedModule = nil; warmedAnalyzer = nil; warmedFormat = nil
             let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream(bufferingPolicy: .bufferingOldest(384))
-            try await prepared.start(inputSequence: stream)
-            if Task.isCancelled { continuation.finish(); await prepared.cancelAndFinishNow(); throw CancellationError() }
-            analyzer = prepared; bridge.attach(continuation, format: format)
             resultsTask = Task { [weak self] in
                 do { for try await result in module.results {
                     if Task.isCancelled { break }
                     self?.emit(text: String(result.text.characters), range: result.range, final: result.isFinal)
                 } } catch { if !Task.isCancelled { self?.onEvent?(.error(SpeechErrorDetails.describe(error))) } }
             }
+            do {
+                try await prepared.start(inputSequence: stream)
+                try Task.checkCancellation()
+            } catch {
+                continuation.finish(); resultsTask?.cancel(); resultsTask = nil
+                await prepared.cancelAndFinishNow(); throw error
+            }
+            analyzer = prepared; bridge.attach(continuation, format: format)
+            onEvent?(.diagnostic("speech_live_configuration", ["fast_results": "\(realtime)", "volatile_results": "true", "prewarmed": "true"]))
             onEvent?(.status("SpeechTranscriber · 本机英文")); return
         }
         onEvent?(.status("检查 Apple 本机模型…"))
@@ -193,19 +203,21 @@ private final class SpeechInputBridge: @unchecked Sendable {
         var primaryError: String?
         if SpeechTranscriber.isAvailable, let supported = await SpeechTranscriber.supportedLocale(equivalentTo: locale) {
             do {
-                let module = SpeechTranscriber(locale: supported, transcriptionOptions: [], reportingOptions: [.volatileResults], attributeOptions: [.audioTimeRange])
+                let module = SpeechTranscriber(locale: supported, transcriptionOptions: [], reportingOptions: reportingOptions, attributeOptions: [.audioTimeRange])
                 try await install(modules: [module], locale: supported)
                 try Task.checkCancellation()
-                try await prepare(modules: [module])
                 resultsTask = Task { [weak self] in
                     do { for try await result in module.results {
                         guard !Task.isCancelled else { break }
                         self?.emit(text: String(result.text.characters), range: result.range, final: result.isFinal)
                     } } catch { if !Task.isCancelled { self?.onEvent?(.error(SpeechErrorDetails.describe(error))) } }
                 }
+                try await prepare(modules: [module])
+                onEvent?(.diagnostic("speech_live_configuration", ["fast_results": "\(realtime)", "volatile_results": "true"]))
                 onEvent?(.status("SpeechTranscriber · 本机英文"))
                 return
             } catch {
+                resultsTask?.cancel(); resultsTask = nil
                 try Task.checkCancellation()
                 primaryError = SpeechErrorDetails.describe(error)
                 onEvent?(.diagnostic("speech_primary_setup_failed", ["error": primaryError!, "locale": supported.identifier]))
@@ -217,16 +229,17 @@ private final class SpeechInputBridge: @unchecked Sendable {
                 let module = DictationTranscriber(locale: supported, contentHints: [.farField], transcriptionOptions: [], reportingOptions: [.volatileResults, .frequentFinalization], attributeOptions: [.audioTimeRange])
                 try await install(modules: [module], locale: supported)
                 try Task.checkCancellation()
-                try await prepare(modules: [module])
                 resultsTask = Task { [weak self] in
                     do { for try await result in module.results {
                         guard !Task.isCancelled else { break }
                         self?.emit(text: String(result.text.characters), range: result.range, final: result.isFinal)
                     } } catch { if !Task.isCancelled { self?.onEvent?(.error(SpeechErrorDetails.describe(error))) } }
                 }
+                try await prepare(modules: [module])
                 onEvent?(.status("DictationTranscriber · 降级本机英文"))
                 return
             } catch {
+                resultsTask?.cancel(); resultsTask = nil
                 try Task.checkCancellation()
                 let fallbackError = SpeechErrorDetails.describe(error)
                 throw WLFailure.message("Speech 初始化失败。\nSpeechTranscriber: \(primaryError ?? "设备/locale 不支持")\nDictationTranscriber: \(fallbackError)\n录音继续保存。")

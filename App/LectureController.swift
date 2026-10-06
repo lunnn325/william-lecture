@@ -16,6 +16,7 @@ import WLAppleAudio
     @Published var noteBusy = false
     @Published var savedCourses = UserDefaults.standard.stringArray(forKey: "savedCourses") ?? []
     @Published var volatileEnglish = ""
+    @Published private(set) var realtimePartial: SpeechPiece?
     @Published var currentChinese = ""
     @Published var audioStatus = "未录音"
     @Published var speechStatus = "未启动"
@@ -57,6 +58,7 @@ import WLAppleAudio
     private var persistence: Task<Void, Never>?
     private var interrupted = false
     private var lastPartialLog = Date.distantPast
+    private var lastEnglishDisplayLog = Date.distantPast
     private var speechReadyAt: Double?
     private var newestDisplayEnd = -1.0
     private let network = NWPathMonitor()
@@ -243,6 +245,7 @@ import WLAppleAudio
         let preparationStart = timelineOffset
         speechReadyAt = nil
         seenSpeechResult = false
+        lastEnglishDisplayLog = .distantPast
         speechError = ""
         if speech == nil { connectSpeechInput() }
         guard let service = speech else { return }
@@ -292,6 +295,7 @@ import WLAppleAudio
                 log("speech_first_result", offset: piece.end, fields: speechTiming(piece, session: session))
             }
             if !final {
+                realtimePartial = piece
                 volatileEnglish = piece.text
                 if localEnabled && recording && foreground {
                     drafts.replacePartial(piece); refreshDraft()
@@ -309,6 +313,7 @@ import WLAppleAudio
                     log("speech_final_overlap", offset: piece.end, fields: ["previous_end": "\(previousEnd)", "range_start": "\(piece.start)"])
                 }
                 volatileEnglish = ""
+                realtimePartial = nil
                 drafts.acceptedFinal(piece)
                 enqueue { try await self.store.appendFinal(piece, session: session.id) }
                 log("speech_finalized", offset: piece.end, fields: speechTiming(piece, session: session))
@@ -389,6 +394,13 @@ import WLAppleAudio
     var captionReferenceID: UUID? { focusedCaptionID ?? visible.last?.id }
     var workspaceDraft: WorkspaceCaption? {
         guard active else { return nil }
+        if let english = LiveEnglishPreview.text(partial: realtimePartial, buffer: buffer, finalizedEnd: finalCursor.end),
+           !visible.contains(where: { $0.id == buffer.pendingID }), let partial = realtimePartial {
+            let draft = drafts.current
+            let chinese = draft?.id == buffer.pendingID && draft?.english == english ? draft?.chinese : nil
+            return WorkspaceCaption(id: buffer.pendingID, start: buffer.pendingStart ?? partial.start,
+                                    english: english, chinese: chinese, provisional: true)
+        }
         if let draft = drafts.current, !visible.contains(where: { $0.id == draft.id }) {
             return WorkspaceCaption(id: draft.id, start: draft.start, english: draft.english, chinese: draft.chinese, provisional: true)
         }
@@ -442,15 +454,23 @@ import WLAppleAudio
         if value, let id = captionReferenceID { captionDidRender(id: id) }
     }
     func setRowVisible(_ id: UUID, _ value: Bool) {
-        if value { renderedRows.insert(id); captionDidRender(id: id) }
+        if value { renderedRows.insert(id) }
         else { renderedRows.remove(id) }
     }
     /// Called by visible SwiftUI captions, rather than by model completion callbacks.
-    func captionDidRender(id: UUID) {
+    func captionDidRender(id: UUID, english: String? = nil) {
         let primary = captionReferenceID == id && primaryCaptionVisible
         guard foreground, primary || renderedRows.contains(id) else { return }
         let at = Date()
-        if let draft = drafts.current, draft.id == id, drafts.markDisplayed(id: id, at: at) {
+        if let english, let partial = realtimePartial, workspaceDraft?.id == id, workspaceDraft?.english == english,
+           at.timeIntervalSince(lastEnglishDisplayLog) >= 1 {
+            lastEnglishDisplayLog = at
+            var fields = ["segment": id.uuidString, "mock": "\(mode == .mock)",
+                "receipt_to_display_ms": "\(Int(max(0, at.timeIntervalSince(partial.receivedAt)) * 1000))"]
+            if let end = partial.audioEndedAt { fields["audio_end_to_display_ms"] = "\(Int(max(0, at.timeIntervalSince(end)) * 1000))" }
+            log("english_preview_display", offset: partial.end, fields: fields, at: at)
+        }
+        if let draft = drafts.current, draft.id == id, workspaceDraft?.chinese != nil, drafts.markDisplayed(id: id, at: at) {
             log("local_first_display", offset: draft.end, fields: ["segment": id.uuidString,
                 "revision": "\(draft.revision)", "mock": "\(mode == .mock)",
                 "partial_to_display_ms": "\(Int(max(0, at.timeIntervalSince(draft.firstPartialAt)) * 1000))"])
@@ -531,6 +551,7 @@ import WLAppleAudio
         }
     }
     private func invalidateDraft() {
+        realtimePartial = nil
         drafts.invalidate(); localWorker?.clearDraft()
         if let focusedCaptionID, !visible.contains(where: { $0.id == focusedCaptionID }) {
             self.focusedCaptionID = visible.last?.id; currentChinese = visible.last.flatMap { captionChinese($0) } ?? ""
@@ -629,14 +650,14 @@ import WLAppleAudio
         }
         return fields
     }
-    private func log(_ event: String, offset: Double? = nil, fields: [String: String] = [:], gap: String? = nil) {
+    private func log(_ event: String, offset: Double? = nil, fields: [String: String] = [:], gap: String? = nil, at: Date = Date()) {
         guard let id = session?.id else { return }
         var fields = fields; if let gap { fields["gap"] = gap }
         if session?.usesRecordingTimeline == true {
             fields["timeline"] = SessionTimeline.recordedAudio.rawValue
             fields["wall_offset"] = "\(Date().timeIntervalSince(session!.startedAt))"
         }
-        let item = Diagnostic(event, offset: offset ?? timelineOffset, fields: fields)
+        let item = Diagnostic(event, offset: offset ?? timelineOffset, fields: fields, at: at)
         enqueue { try await self.store.log(item, session: id) }
     }
     func refreshHistory() async { do { history = try await store.sessions() } catch { warning = error.localizedDescription } }

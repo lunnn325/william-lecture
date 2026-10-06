@@ -126,6 +126,7 @@ import UIKit
         XCTAssertTrue(app.buttons["follow-latest"].exists, "Rotation must preserve a suspended reader")
         app.buttons["follow-latest"].tap()
         waitForLatestCaption(app)
+        capture(app, "workspace-portrait-return")
     }
     private func launch(active: Bool, extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication(); app.launchArguments = ["--wl-ui-fixture"] + (active ? ["--wl-fixture-active"] : []) + extra

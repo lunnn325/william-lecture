@@ -11,7 +11,7 @@ import WLCore
         let files = session.audioFiles.sorted { (offsets[$0] ?? 0) < (offsets[$1] ?? 0) }
         for range in ranges {
             try Task.checkCancellation()
-            let service = SpeechService()
+            let service = SpeechService(realtime: false)
             var buffer = SentenceBuffer(), pieces: [TranscriptSegment] = []
             var cursor = FinalSpeechCursor()
             var failure: String?

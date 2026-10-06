@@ -66,6 +66,7 @@ struct LessonDetailView: View {
     @State private var mapScale = 1.0
     @State private var mapBaseScale = 1.0
     @State private var mapSize = CGSize(width: 950, height: 520)
+    @State private var viewportHeight: CGFloat = 800
     @State private var jumpID: UUID?
     @State private var jumpRequest = 0
     @StateObject private var playback = LecturePlayback()
@@ -105,6 +106,7 @@ struct LessonDetailView: View {
                     if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(Color.williamWarning) }
                 }.frame(maxWidth: 720).padding(24).frame(maxWidth: .infinity)
             }.background(Color(uiColor: .systemBackground))
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _, height in viewportHeight = height }
                 .onChange(of: jumpRequest) { _, _ in
                     guard let id = jumpID else { return }
                     Task { try? await Task.sleep(for: .milliseconds(100)); proxy.scrollTo(id, anchor: .top); jumpID = nil }
@@ -212,7 +214,7 @@ struct LessonDetailView: View {
                     .frame(width: mapSize.width * mapScale, height: mapSize.height * mapScale, alignment: .topLeading)
                     .padding(16)
                     .simultaneousGesture(MagnifyGesture().onChanged { value in mapScale = min(2, max(0.6, mapBaseScale * value.magnification)) }.onEnded { _ in mapBaseScale = mapScale })
-            }.frame(height: 560)
+            }.frame(height: min(560, max(240, viewportHeight * 0.58)))
         } else { Text("暂无思维导图").font(.subheadline).foregroundStyle(Color.williamSecondary) }
     }
     private func detailCaption(_ segment: TranscriptSegment) -> some View {

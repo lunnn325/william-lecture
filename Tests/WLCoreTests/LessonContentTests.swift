@@ -91,4 +91,19 @@ final class LessonContentTests: XCTestCase {
         XCTAssertEqual(final.first?.finalChinese, "税收改变激励。")
         XCTAssertNil(final.first?.gptRequestID)
     }
+    func testEnglishPreviewIsImmediateAndNeverChangesStableBuffer() {
+        var buffer = SentenceBuffer()
+        let word = SpeechPiece(text: "The", start: 0, end: 0.2)
+        XCTAssertEqual(LiveEnglishPreview.text(partial: word, buffer: buffer, finalizedEnd: -1), "The")
+        XCTAssertEqual(LiveEnglishPreview.text(partial: .init(text: "The social cost", start: 0, end: 0.8), buffer: buffer, finalizedEnd: -1), "The social cost")
+        XCTAssertTrue(buffer.pendingText.isEmpty)
+        _ = buffer.append(.init(text: "The cost", start: 0, end: 1))
+        let overlap = SpeechPiece(text: "The cost is not zero", start: 0, end: 2)
+        XCTAssertEqual(LiveEnglishPreview.text(partial: overlap, buffer: buffer, finalizedEnd: 1), "The cost is not zero")
+        XCTAssertEqual(buffer.pendingText, "The cost")
+        let tail = SpeechPiece(text: "is not zero", start: 1, end: 2)
+        XCTAssertEqual(LiveEnglishPreview.text(partial: tail, buffer: buffer, finalizedEnd: 1), "The cost is not zero")
+        XCTAssertNil(LiveEnglishPreview.text(partial: tail, buffer: buffer, finalizedEnd: 2))
+        XCTAssertNil(LiveEnglishPreview.text(partial: .init(text: "", start: 1, end: 2), buffer: buffer, finalizedEnd: 1))
+    }
 }
