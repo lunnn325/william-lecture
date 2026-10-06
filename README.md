@@ -81,7 +81,7 @@ node scripts/analyze-diagnostics.mjs "C:\path\diagnostics.jsonl"
 
 ## 构建与结构
 
-Windows 修改后提交即可触发 CI。CI 使用 `macos-26`、Xcode 26.5、XcodeGen 2.46.0；先编译 Release 真机 arm64 App，再运行 `swift test` 和全新 iPhone/iPad 模拟器使用流程测试，生成未签名 IPA 与原生截图。Apple 证书和 OpenAI Key 都不需要上传到 CI。私有仓库使用你的 Actions 额度，详见 [GitHub runner 说明](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。
+Windows 修改后提交即可触发 CI。CI 使用标准 Apple Silicon `macos-26`、Xcode 26.5、XcodeGen 2.46.0；编译 Release 真机 arm64 App 并运行 `swift test` 后先保存未签名 IPA，再运行全新 iPhone/iPad 模拟器流程并保存原生截图。Job 时限 45 分钟、模拟器步骤 35 分钟，允许冷启动。Apple 证书和 OpenAI Key 都不需要上传到 CI。本仓库现为 Public，标准托管 runner 不计费，详见 [GitHub runner 说明](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。
 
 有 Mac 时：
 
