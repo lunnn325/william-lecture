@@ -2,6 +2,7 @@ import AVFoundation
 import Combine
 import Foundation
 import Network
+import UIKit
 import WLCore
 import WLAppleAudio
 
@@ -32,9 +33,11 @@ import WLAppleAudio
     @Published var starting = false
     @Published var stopping = false
     @Published var mode = TranslationMode(rawValue: UserDefaults.standard.string(forKey: "translationMode") ?? "openAI") ?? .openAI
-    @Published var model = UserDefaults.standard.string(forKey: "translationModel") ?? "gpt-4.1-mini"
+    @Published var model = UserDefaults.standard.string(forKey: "translationModel") ?? "gpt-5.6-luna"
     @Published var locale = UserDefaults.standard.string(forKey: "speechLocale") ?? "en-AU"
     let store: SessionStore
+    lazy var processing = LessonProcessingCoordinator(store: store)
+    private var warmedSpeech: SpeechService?
     private var recorder: AudioRecorder?
     private var speech: SpeechService?
     private var speechPreparation: Task<Void, Never>?
@@ -72,6 +75,10 @@ import WLAppleAudio
         let directory = "Sessions"
         #endif
         store = SessionStore(root: documents.appendingPathComponent(directory, isDirectory: true))
+        if !UserDefaults.standard.bool(forKey: "wl11ModelsConfigured") {
+            model = "gpt-5.6-luna"; UserDefaults.standard.set(model, forKey: "translationModel")
+            UserDefaults.standard.set(true, forKey: "wl11ModelsConfigured")
+        }
         busy = true
         Task {
             defer { busy = false }
@@ -83,10 +90,16 @@ import WLAppleAudio
                 if isUIFixture { try await installUIFixture() }
                 #endif
                 await refreshHistory()
+                #if DEBUG
+                if !isUIFixture { prewarm(); processing.wake() }
+                #else
+                prewarm(); processing.wake()
+                #endif
             } catch { warning = error.localizedDescription }
         }
         network.pathUpdateHandler = { [weak self] path in Task { @MainActor in
             guard let self else { return }
+            self.processing.setOnline(path.status == .satisfied)
             if path.status == .satisfied {
                 if self.wasOffline { self.log("network_restored"); self.worker?.networkRestored() }
                 self.wasOffline = false
@@ -96,6 +109,11 @@ import WLAppleAudio
     }
     var active: Bool { session != nil && session?.state != .stopped && session?.state != .recovered }
     var recording: Bool { session?.state == .recording }
+    private func prewarm() {
+        guard !active else { return }
+        if warmedSpeech == nil { let s = SpeechService(); s.prewarm(localeIdentifier: locale); warmedSpeech = s }
+        Task { await localTranslator.prepareInstalledSession() }
+    }
     @discardableResult func saveSettings(key: String?) -> Bool {
         guard !active, !busy else { warning = "请先结束录课并等待保存完成，再更改翻译设置"; return false }
         if let key { do { try Keychain.save(key.trimmingCharacters(in: .whitespacesAndNewlines)) } catch { warning = error.localizedDescription; return false } }
@@ -103,6 +121,8 @@ import WLAppleAudio
         UserDefaults.standard.set(model, forKey: "translationModel")
         UserDefaults.standard.set(locale, forKey: "speechLocale")
         UserDefaults.standard.set(localEnabled, forKey: "localTranslationEnabled")
+        let old = warmedSpeech; warmedSpeech = nil
+        Task { await old?.finish(); prewarm(); await processing.configurationChanged() }
         return true
     }
     func start() async {
@@ -110,6 +130,7 @@ import WLAppleAudio
         #if DEBUG
         if isUIFixture { await startUIFixture(); return }
         #endif
+        processing.setRecording(true)
         await worker?.waitForCancellation(); worker = nil
         await localWorker?.shutdown(); localWorker = nil
         interruptionTask?.cancel(); await interruptionTask?.value; interruptionTask = nil
@@ -134,6 +155,7 @@ import WLAppleAudio
                 guard self?.session?.id == next.id else { return }
                 self?.handleAudio(event)
             } }
+            connectSpeechInput()
             try await recorder.start(directory: folder, origin: next.startedAt)
             makeWorker(next); makeLocalWorker(next)
             startSpeech(); startTimer(); await refreshHistory()
@@ -141,6 +163,7 @@ import WLAppleAudio
             warning = error.localizedDescription; audioStatus = "录音未开始"
             if var failed = session { failed.state = .stopped; failed.stoppedAt = Date(); session = failed; try? await store.save(failed) }
             await recorder?.stop(); recorder = nil
+            await finishSpeech(); processing.setRecording(false)
         }
     }
     func pauseOrResume() async {
@@ -156,6 +179,7 @@ import WLAppleAudio
             log("pause", gap: "用户课间暂停，未采集此时段音频")
         } else {
             do {
+                connectSpeechInput()
                 try await recorder?.resume(); session?.state = .recording; interrupted = false
                 startSpeech(); log("resume")
             } catch { warning = error.localizedDescription; audioStatus = "恢复录音失败" }
@@ -167,6 +191,7 @@ import WLAppleAudio
         #if DEBUG
         if isUIFixture { session?.state = .stopped; session?.stoppedAt = Date(); if let session { try? await store.save(session) }; await refreshHistory(); return }
         #endif
+        processing.beginLease()
         // Stop/close the audio first; never wait for translation to stop recording.
         await recorder?.stop(); recorder?.onPacket = nil
         let stoppedAt = Date()
@@ -174,15 +199,23 @@ import WLAppleAudio
         timer?.cancel(); timer = nil
         session?.state = .stopped // Reject late interruption events while draining Speech.
         await finishSpeech(); flushBuffer(); invalidateDraft(); await persistence?.value
+        if let id = session?.id, (session?.recordingSeconds ?? 0) > max(0, finalCursor.end) + 0.1 {
+            try? await store.log(Diagnostic("speech_unfinalized_tail", fields: ["range_start": "\(max(0, finalCursor.end))", "range_end": "\(session?.recordingSeconds ?? 0)", "replay": "pending"]), session: id)
+        }
         if var ended = session {
             ended.state = .stopped; ended.stoppedAt = stoppedAt
             ended.duration = ended.usesRecordingTimeline ? ended.recordingSeconds : stoppedAt.timeIntervalSince(ended.startedAt)
             session = ended
+            ended.preview = visible.first.flatMap { $0.exportChinese ?? $0.english }
+            ended.markCount = sessionNotes.filter(\.marked).count
             do { try await store.save(ended); try await store.log(Diagnostic("session_stop", offset: ended.duration), session: ended.id) }
             catch { warning = "保存记录失败：\(error.localizedDescription)" }
         }
         timer?.cancel(); timer = nil; recorder = nil; audioStatus = "已停止；翻译可继续补齐"
         await refreshHistory()
+        worker?.cancel()
+        if let session, mode == .openAI { await processing.enqueue(session) }
+        processing.setRecording(false); prewarm()
     }
     private func startTimer() {
         timer?.cancel()
@@ -194,18 +227,22 @@ import WLAppleAudio
             }
         }
     }
+    private func connectSpeechInput() {
+        let service = warmedSpeech ?? SpeechService(); warmedSpeech = nil; speech = service
+        service.onEvent = { [weak self, weak service] event in
+            guard let self, let service, self.speech === service else { return }
+            self.handleSpeech(event)
+        }
+        recorder?.onPacket = service.packetSink()
+    }
     private func startSpeech() {
         invalidateDraft()
         let preparationStart = timelineOffset
         speechReadyAt = nil
         seenSpeechResult = false
         speechError = ""
-        let service = SpeechService(); speech = service
-        service.onEvent = { [weak self, weak service] event in
-            guard let self, let service, self.speech === service else { return }
-            self.handleSpeech(event)
-        }
-        recorder?.onPacket = service.packetSink()
+        if speech == nil { connectSpeechInput() }
+        guard let service = speech else { return }
         let id = session?.id
         speechPreparation = Task { [weak self, weak service] in
             guard let self, let service else { return }
@@ -214,13 +251,14 @@ import WLAppleAudio
                 guard !Task.isCancelled, self.session?.id == id else { await service.finish(); return }
                 let ready = self.timelineOffset; self.speechReadyAt = ready
                 self.log("speech_ready", fields: ["engine": self.speechStatus, "locale": self.locale])
-                if ready - preparationStart > 1 { self.log("speech_preparation_gap", gap: "模型准备期间只录音，未实时转写；音频保留可补处理") }
+                if ready - preparationStart > 1 { self.log("speech_preparation_buffered", fields: ["seconds": "\(ready - preparationStart)"]) }
             } catch is CancellationError { }
             catch {
                 guard self.speech === service, self.session?.id == id, !Task.isCancelled else { return }
                 self.speechStatus = "转写不可用；录音继续"
                 self.speechError = SpeechErrorDetails.describe(error)
                 self.log("speech_error", fields: ["error": self.speechError], gap: "实时英文可能缺失；原始音频继续保存")
+                self.recorder?.onPacket = nil; await service.finish()
             }
         }
     }
@@ -237,7 +275,7 @@ import WLAppleAudio
         case .status(let status): speechStatus = status
         case .error(let message): speechStatus = "转写错误；录音继续"; speechError = message; log("speech_error", fields: ["error": message], gap: "英文转写中断，音频保留")
         case .diagnostic(let event, let fields): log(event, fields: fields)
-        case .dropped(let offset): log("speech_input_drop", offset: offset, gap: "Speech 输入积压或转换失败；音频未丢失")
+        case .dropped(let start, let end): log("speech_input_gap", offset: start, fields: ["range_start": "\(start)", "range_end": "\(end)"], gap: "转写输入缺口；原始音频保留")
         case .result(let piece, let final):
             lastSpeechResultAt = piece.receivedAt
             if !seenSpeechResult {
@@ -349,7 +387,7 @@ import WLAppleAudio
         guard !english.isEmpty, !visible.contains(where: { $0.id == buffer.pendingID }) else { return nil }
         return WorkspaceCaption(id: buffer.pendingID, start: buffer.pendingStart ?? elapsed, english: english, chinese: nil, provisional: true)
     }
-    var courseChoices: [String] { Array(Set(savedCourses + history.map(\.course) + [course])).sorted() }
+    var courseChoices: [String] { Array(Set(CourseProfiles.courses + savedCourses + history.map(\.course) + [course])).sorted() }
     func selectCourse(_ name: String) {
         guard !active, !busy else { return }
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -378,13 +416,17 @@ import WLAppleAudio
             var saved = note; saved.updatedAt = Date(); try await store.saveNote(saved, session: id)
             let notes = try await store.notes(id)
             if session?.id == id { sessionNotes = notes }
+            if !active, var savedSession = try await store.sessions().first(where: { $0.id == id }) {
+                savedSession.markCount = notes.filter(\.marked).count; try await store.save(savedSession)
+            }
             return true
         } catch { warning = "笔记保存失败：\(error.localizedDescription)"; return false }
     }
     func toggleMark(_ caption: WorkspaceCaption) async {
         guard let id = session?.id else { return }
         var note = note(for: caption.id) ?? LectureNote(segmentID: caption.id, offset: caption.start, english: caption.english, marked: false)
-        note.marked.toggle(); _ = await writeNote(note, session: id)
+        note.marked.toggle()
+        if await writeNote(note, session: id) { UISelectionFeedbackGenerator().selectionChanged() }
     }
     func setPrimaryCaptionVisible(_ value: Bool) {
         primaryCaptionVisible = value
@@ -486,6 +528,7 @@ import WLAppleAudio
         }
     }
     func setForeground(_ value: Bool) {
+        processing.setForeground(value)
         guard foreground != value else { return }
         foreground = value; localWorker?.setForeground(value)
         if !value { invalidateDraft() }
@@ -498,6 +541,7 @@ import WLAppleAudio
             for id in renderedRows { captionDidRender(id: id) }
         }
         log(value ? "caption_foreground" : "caption_background")
+        if value && !active { prewarm() }
     }
     func retryLocalTranslation() async {
         guard localEnabled, let selected = session else { return }
@@ -601,12 +645,12 @@ import WLAppleAudio
         } catch { warning = error.localizedDescription }
     }
     func cancelTranslations() { worker?.cancel() }
-    func exportText(_ selected: LectureSession, language: ExportLanguage, markdown: Bool) async throws -> (URL, URL) {
+    func exportText(_ selected: LectureSession, language: ExportLanguage, markdown: Bool, original: Bool = false) async throws -> (URL, URL) {
         guard !active, !busy else { throw WLFailure.message("请先停止录音并等待保存完成，再导出") }
         busy = true; defer { busy = false }
         await persistence?.value; await worker?.flushDiagnostics()
         await localWorker?.flushDiagnostics()
-        return (try await store.export(selected.id, language: language, markdown: markdown),
+        return (try await store.export(selected.id, language: language, markdown: markdown, original: original),
                 try await store.exportDiagnostics(selected.id))
     }
     func exportAudio(_ selected: LectureSession) async throws -> URL {
@@ -627,5 +671,11 @@ import WLAppleAudio
         guard recording else { return }
         log("speech_manual_retry", gap: "重启 Speech 期间只录音，实时英文可能缺失")
         startSpeech()
+    }
+    func prepareSpeechModels() async {
+        guard !active else { return }
+        speechStatus = "正在准备英文模型"
+        do { try await SpeechService.prepareAssets(localeIdentifier: locale); speechStatus = "英文模型已准备"; prewarm() }
+        catch { speechStatus = "英文模型未准备：\(error.localizedDescription)" }
     }
 }

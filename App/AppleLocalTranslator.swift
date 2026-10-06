@@ -39,6 +39,14 @@ actor AppleLocalTranslator {
         guard generation == ticket else { throw CancellationError() }
         return result.targetText
     }
+    func prepareInstalledSession() async {
+        guard !translating, session == nil else { return }
+        let ticket = generation
+        guard await availability() == .installed, generation == ticket, !translating, session == nil else { return }
+        if #available(iOS 26.4, *) {
+            session = TranslationSession(installedSource: Self.source, target: Self.target, preferredStrategy: .lowLatency)
+        } else { session = TranslationSession(installedSource: Self.source, target: Self.target) }
+    }
     func cancel() {
         generation = UUID(); session?.cancel(); session = nil
     }

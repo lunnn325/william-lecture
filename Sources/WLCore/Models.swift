@@ -20,6 +20,10 @@ public struct LectureSession: Codable, Identifiable, Sendable {
     public var usesRecordingTimeline: Bool { timeline == .recordedAudio }
     public var recordingSeconds: Double { max(0, recordedDuration ?? 0) }
     public var audioFiles: [String]
+    public var title: String?
+    public var preview: String?
+    public var markCount: Int?
+    public var displayTitle: String { (title?.isEmpty == false ? title : nil) ?? (course.isEmpty || course == "未命名课程" ? "未分类课程" : course) }
     public init(course: String, now: Date = Date()) {
         id = UUID(); self.course = course; startedAt = now
         state = .recording; duration = 0; recordedDuration = 0; timeline = .recordedAudio; audioFiles = []

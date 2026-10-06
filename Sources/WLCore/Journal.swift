@@ -122,6 +122,11 @@ public actor SessionStore {
               current.english == source.english else { return nil }
         return current
     }
+    public func englishContext(_ source: TranscriptSegment, session: UUID) throws -> String {
+        try loadTranslationIndex(session)
+        return String(translationIndex.values.filter { $0.id != source.id && $0.end <= source.start + 0.001 && $0.end >= source.start - 30 }
+            .sorted { $0.start < $1.start }.map(\.english).joined(separator: " ").suffix(6000))
+    }
     public func beginGPT(_ source: TranscriptSegment, session: UUID, request: UUID, at: Date) throws -> TranscriptSegment? {
         guard !Task.isCancelled, var current = try translationSnapshot(source, session: session),
               current.status == .pending || current.status == .failed else { return nil }
@@ -293,23 +298,27 @@ public actor SessionStore {
         }
         return issues
     }
-    public func export(_ id: UUID, language: ExportLanguage, markdown: Bool) throws -> URL {
+    public func export(_ id: UUID, language: ExportLanguage, markdown: Bool, original: Bool = false) throws -> URL {
         guard let session = try sessions().first(where: { $0.id == id }) else { throw WLFailure.message("Session not found") }
         let directory = folder(id).appendingPathComponent("Exports", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("WilliamLecture-\(language.rawValue)-\(UUID().uuidString).\(markdown ? "md" : "txt")")
         let records = try segments(id)
-        var lines = ["\(markdown ? "# " : "")\(session.course)", "Session: \(session.id)", "Date: \(session.startedAt.ISO8601Format())", ""]
+        let document = original ? nil : try content(id)
+        var lines = ["\(markdown ? "# " : "")\(session.displayTitle)", "Session: \(session.id)", "Date: \(session.startedAt.ISO8601Format())", ""]
+        if let document, document.state != .completed { lines.append("课后处理：\(document.state.label)。文件为当前快照，缺失内容明确标记。") }
         lines.insert(session.usesRecordingTimeline ? "时间轴：实际录音，暂停不计时。" : "时间轴：旧版课堂，保留暂停空档。", at: 3)
         var gaps: [Diagnostic] = []
         try JSONLines.scan(Diagnostic.self, at: folder(id).appendingPathComponent("diagnostics.jsonl")) {
             if $0.fields["gap"] != nil { gaps.append($0) }
         }
         for record in records {
+            let corrected = document?.correction(for: record)
             lines.append("[\(Self.timestamp(record.start)) – \(Self.timestamp(record.end))]")
-            if language != .chinese { lines.append(record.english) }
+            if language != .chinese { lines.append(corrected?.english ?? record.english) }
             if language != .english {
-                if record.finalChinese != nil { lines.append(record.finalChinese!) }
+                if let corrected, !corrected.chinese.isEmpty { lines.append(corrected.chinese) }
+                else if record.finalChinese != nil { lines.append(record.finalChinese!) }
                 else if let local = record.validLocalChinese { lines.append("[本机翻译 / GPT 未完成] \(local)") }
                 else if record.status == .mock { lines.append("[MOCK / 模拟翻译，非真实中文] \(record.chinese ?? "")") }
                 else { lines.append("[中文缺失：\(record.status.rawValue)]") }
@@ -347,5 +356,10 @@ public actor SessionStore {
     }
     public nonisolated static func timestamp(_ seconds: Double) -> String {
         let total = max(0, Int(seconds)); return String(format: "%02d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)
+    }
+    public nonisolated static func readingTime(_ seconds: Double) -> String {
+        let total = seconds.isFinite ? max(0, Int(seconds)) : 0
+        return total < 3600 ? String(format: "%02d:%02d", total / 60, total % 60)
+            : String(format: "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)
     }
 }

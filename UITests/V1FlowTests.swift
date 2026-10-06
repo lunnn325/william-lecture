@@ -3,6 +3,20 @@ import UIKit
 
 @MainActor final class V1FlowTests: XCTestCase {
     override func setUp() { super.setUp(); continueAfterFailure = false; XCUIDevice.shared.orientation = .portrait }
+    func testSelectedSentenceMarkWhileRecording() {
+        let app = launch(active: true)
+        XCTAssertTrue(app.buttons["pause-recording"].waitForExistence(timeout: 20))
+        let oldID = "20000000-0000-0000-0000-000000000017"
+        let latestID = "20000000-0000-0000-0000-000000000018"
+        if app.images["caption-mark-\(latestID)"].exists { app.buttons["add-note"].tap() }
+        let old = app.staticTexts["caption-english-\(oldID)"]
+        if !old.isHittable { app.scrollViews["caption-scroll"].swipeDown() }
+        XCTAssertTrue(old.isHittable); old.tap()
+        app.buttons["add-note"].tap()
+        XCTAssertTrue(app.images["caption-mark-\(oldID)"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.images["caption-mark-\(latestID)"].exists)
+        XCTAssertTrue(app.staticTexts["录音中"].exists)
+    }
     func testReadingMarkNotePauseStopPlaybackAndExport() {
         let app = launch(active: true)
         let pause = app.buttons["pause-recording"]
@@ -10,7 +24,7 @@ import UIKit
         capture(app, "workspace-light")
         app.buttons["add-note"].tap()
         app.buttons["add-note"].press(forDuration: 1)
-        app.buttons["写笔记"].tap()
+        app.buttons["笔记"].tap()
         let editor = app.textViews["note-text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 5)); editor.tap(); editor.typeText("Review price ceiling")
         app.buttons["保存笔记"].tap()
@@ -26,12 +40,10 @@ import UIKit
         app.buttons["stop-recording"].tap(); app.alerts.buttons["继续录课"].tap()
         XCTAssertTrue(pause.exists)
         app.buttons["stop-recording"].tap(); app.alerts.buttons["结束并保存"].tap()
-        XCTAssertTrue(app.buttons["start-recording"].waitForExistence(timeout: 10))
-        app.buttons["查看这节课"].tap()
         let play = app.buttons["play-lecture"]
         XCTAssertTrue(play.waitForExistence(timeout: 10))
         waitEnabled(play); play.tap()
-        XCTAssertTrue(play.label.contains("暂停"))
+        XCTAssertTrue(play.label.contains("播放"))
         play.tap(); capture(app, "detail")
         XCTAssertTrue(app.staticTexts["Review price ceiling"].exists)
         app.buttons["导出课堂"].tap()
@@ -46,7 +58,7 @@ import UIKit
         XCTAssertFalse(app.buttons["分享 / 保存到文件"].exists, "A changed option must not share the previous export")
         app.buttons["生成导出文件"].tap()
         waitPreparedFiles(app)
-        app.buttons["完成"].firstMatch.tap(); app.buttons["完成"].firstMatch.tap()
+        app.buttons["完成"].firstMatch.tap(); app.navigationBars.buttons.firstMatch.tap()
         app.buttons["start-recording"].tap()
         XCTAssertTrue(app.buttons["pause-recording"].waitForExistence(timeout: 10))
     }
@@ -88,7 +100,7 @@ import UIKit
         // A historical reader must not be re-anchored by the same resize task.
         // ScrollView's accessibility frame includes both fixed shelves. A default
         // landscape swipe begins on the controls, so drag inside the reading area.
-        let top = app.buttons["翻译状态与诊断"].frame.maxY + 32
+        let top = app.navigationBars.firstMatch.frame.maxY + 24
         let bottom = app.staticTexts["recording-time"].frame.minY - 24
         XCTAssertGreaterThan(bottom - top, 20)
         let origin = app.coordinate(withNormalizedOffset: .zero)

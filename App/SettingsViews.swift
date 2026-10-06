@@ -12,6 +12,7 @@ struct LectureSettingsView: View {
     @State private var error = ""
     @State private var preparation: TranslationSession.Configuration?
     @State private var preparing = false
+    @State private var preparingSpeech = false
     var body: some View {
         Form {
             if controller.active { Section { Text("正在录课。翻译和课程配置会锁定到这节课结束；你仍可查看诊断。").font(.footnote).foregroundStyle(Color.williamSecondary) } }
@@ -38,20 +39,26 @@ struct LectureSettingsView: View {
                 }
                 Text("录课前准备一次。录课时不会下载翻译模型；本机不可用时仍保留录音和 GPT 路径。").font(.footnote).foregroundStyle(Color.williamSecondary)
             }
+            Section("英文转写") {
+                Text(controller.speechStatus).font(.footnote).foregroundStyle(Color.williamSecondary)
+                Button("准备英文模型") { Task { preparingSpeech = true; await controller.prepareSpeechModels(); preparingSpeech = false } }
+                    .disabled(preparingSpeech || controller.active || controller.busy)
+            }
             Section("OpenAI 最终翻译") {
                 Text(keySaved || Keychain.load() != nil ? "API Key 已保存在本机" : "尚未配置 API Key")
                 SecureField("输入新 Key，留空保留原 Key", text: $key, prompt: Text("输入新 Key，留空保留原 Key").foregroundStyle(Color.williamSecondary))
                     .textInputAutocapitalization(.never).autocorrectionDisabled().disabled(controller.active || controller.busy)
                 TextField("模型名称", text: $controller.model, prompt: Text("模型名称").foregroundStyle(Color.williamSecondary))
                     .textInputAutocapitalization(.never).autocorrectionDisabled().disabled(controller.active || controller.busy)
+                LabeledContent("摘要与思维导图", value: "gpt-6.1-sol")
                 Button("保存设置") { save() }.disabled(controller.active || controller.busy || preparing || controller.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 if Keychain.load() != nil { Button("移除 API Key", role: .destructive) { removeKey = true }.disabled(controller.active || controller.busy) }
                 if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(Color.williamWarning) }
-                Text("仅稳定英文片段会发给 OpenAI，原始音频留在本机。Key 保存在 Keychain，不进入导出或诊断。没有 Key 仍可使用已准备的本机翻译。").font(.footnote).foregroundStyle(Color.williamSecondary)
+                Text("稳定英文和课后文字用于翻译、修订与摘要，原始音频留在本机。Key 保存在 Keychain。").font(.footnote).foregroundStyle(Color.williamSecondary)
             }
             Section {
                 NavigationLink { DiagnosticsView() } label: { Label("状态与诊断", systemImage: "stethoscope") }
-                Text("William Lecture 1.0.0\n课堂记录保存在这台设备。文字、笔记、音频可在课程详情导出。").font(.footnote).foregroundStyle(Color.williamSecondary)
+                Text("William Lecture 1.1.0\n记录保存在本机。").font(.footnote).foregroundStyle(Color.williamSecondary)
             }
         }.navigationTitle("设置").navigationBarTitleDisplayMode(inSheet ? .inline : .large)
             .toolbar { if inSheet { ToolbarItem(placement: .confirmationAction) { Button("完成") { if controller.active || controller.busy { dismiss() } else { save(); if error.isEmpty { dismiss() } } }.disabled(preparing) } } }

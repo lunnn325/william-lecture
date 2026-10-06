@@ -4,8 +4,8 @@ import UIKit
 extension Color {
     static let williamAccent = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.35, green: 0.78, blue: 0.80, alpha: 1)
-            : UIColor(red: 0, green: 0.39, blue: 0.42, alpha: 1)
+            ? UIColor(red: 0.76, green: 0.83, blue: 0.93, alpha: 1)
+            : UIColor(red: 0.14, green: 0.20, blue: 0.28, alpha: 1)
     })
     static let williamSecondary = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark

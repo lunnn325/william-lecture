@@ -10,9 +10,9 @@ struct WorkspaceCaption: Identifiable, Equatable {
     let phase: CaptionPhase
     let revision: Int
     var provisional = false
-    init(_ segment: TranscriptSegment, chinese: String? = nil) {
-        id = segment.id; start = segment.start; english = segment.english; self.chinese = chinese ?? segment.displayChinese
-        phase = segment.phase; revision = segment.sourceRevision
+    init(_ segment: TranscriptSegment, chinese: String? = nil, english: String? = nil, phase: CaptionPhase? = nil) {
+        id = segment.id; start = segment.start; self.english = english ?? segment.english; self.chinese = chinese ?? segment.displayChinese
+        self.phase = phase ?? segment.phase; revision = segment.sourceRevision
     }
     init(id: UUID, start: Double, english: String, chinese: String?, provisional: Bool) {
         self.id = id; self.start = start; self.english = english; self.chinese = chinese; self.provisional = provisional
@@ -42,22 +42,24 @@ struct LectureRootView: View {
 struct CaptionTextView: View {
     let caption: WorkspaceCaption
     var marked = false
+    @ScaledMetric(relativeTo: .body) private var chineseSize = 22.0
+    @ScaledMetric(relativeTo: .body) private var englishSize = 17.0
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(caption.english).font(.subheadline).foregroundStyle(Color.williamSecondary).fixedSize(horizontal: false, vertical: true)
+                Text(caption.english).font(.system(size: englishSize)).lineSpacing(4).foregroundStyle(Color.williamSecondary).fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("caption-english-\(caption.id.uuidString)")
-                if marked { Image(systemName: "bookmark.fill").font(.caption).foregroundStyle(.tint).accessibilityLabel("已标记") }
+                if marked { Image(systemName: "bookmark.fill").font(.caption).foregroundStyle(.tint).accessibilityLabel("已标记").accessibilityIdentifier("caption-mark-\(caption.id.uuidString)") }
             }
-            Text(caption.chinese ?? "中文稍后出现…")
-                .font(.title2.weight(.medium)).lineSpacing(5)
+            Text(caption.chinese ?? (caption.phase == .failed ? "翻译未完成" : "翻译处理中"))
+                .font(caption.chinese == nil ? .footnote : .system(size: chineseSize, weight: .regular)).lineSpacing(6)
                 .foregroundStyle(caption.chinese == nil ? Color.williamSecondary : Color.primary)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("caption-chinese-\(caption.id.uuidString)")
-            Text(SessionStore.timestamp(caption.start)).font(.caption2).monospacedDigit().foregroundStyle(Color.williamSecondary)
+            Text(SessionStore.readingTime(caption.start)).font(.caption2).monospacedDigit().foregroundStyle(Color.williamSecondary)
                 .accessibilityIdentifier("caption-time-\(caption.id.uuidString)")
         }
-        .padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("caption-\(caption.id.uuidString)")
@@ -79,14 +81,24 @@ struct WorkspaceView: View {
     @State private var loadingEarlier = false
     @State private var hasEarlier = false
     @State private var paneSessionID: UUID?
-    private var live: WorkspaceCaption? { feed.following ? controller.workspaceDraft : nil }
+    @State private var selectedCaption: WorkspaceCaption?
+    private var live: WorkspaceCaption? {
+        if feed.following { return controller.workspaceDraft }
+        return selectedCaption.flatMap { chosen in feed.rows.contains(where: { $0.id == chosen.id }) ? nil : chosen }
+    }
+    private var markTarget: WorkspaceCaption? {
+        if let chosen = selectedCaption {
+            return feed.rows.first(where: { $0.id == chosen.id }).map { WorkspaceCaption($0, chinese: controller.captionChinese($0)) } ?? chosen
+        }
+        return controller.workspaceDraft ?? feed.rows.last.map { WorkspaceCaption($0) }
+    }
     private var bottomID: UUID? { live?.id ?? feed.rows.last?.id }
 
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
+                    LazyVStack(alignment: .leading, spacing: 24) {
                         if feed.rows.isEmpty && live == nil { emptyState }
                         if hasEarlier {
                             Button(loadingEarlier ? "正在读取…" : "查看更早字幕") { Task { await earlier() } }
@@ -99,7 +111,7 @@ struct WorkspaceView: View {
                         if let live { captionRow(live) }
                         Color.clear.frame(height: 8).id("caption-bottom")
                     }
-                    .frame(maxWidth: 760).padding(.horizontal, 22).padding(.top, 20).padding(.bottom, 12)
+                    .frame(maxWidth: 720).padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 12)
                     .frame(maxWidth: .infinity)
                 }
                 .accessibilityIdentifier("caption-scroll")
@@ -121,22 +133,24 @@ struct WorkspaceView: View {
                 } action: { _, value in nearBottom = value }
                 .onScrollPhaseChange { _, phase in
                     if phase == .interacting { feed.suspend() }
-                    if phase == .idle && nearBottom && !feed.following {
+                    if phase == .idle && nearBottom && !feed.following && selectedCaption == nil {
                         Task { await latest(proxy) }
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
                     if !feed.following {
                         Button { Task { await latest(proxy) } } label: {
-                            Label(feed.hasNewContent ? "有新字幕 · 回到最新" : "回到最新", systemImage: "arrow.down")
-                                .font(.subheadline.weight(.medium)).padding(.horizontal, 16).frame(minHeight: 44)
+                            Image(systemName: "arrow.down").font(.subheadline).frame(width: 44, height: 44)
                         }
-                        .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
+                        .buttonStyle(.bordered).buttonBorderShape(.circle).accessibilityLabel("回到最新")
                         .padding(.trailing, 22).padding(.bottom, 12).accessibilityIdentifier("follow-latest")
                     }
                 }
                 .onChange(of: controller.latestCaptionUpdate) { _, segment in
-                    if let segment { feed.merge([segment]); follow(proxy) }
+                    if let segment {
+                        if selectedCaption?.id == segment.id { selectedCaption = WorkspaceCaption(segment, chinese: controller.captionChinese(segment)) }
+                        feed.merge([segment]); follow(proxy)
+                    }
                 }
                 .onChange(of: controller.visible) { _, segments in feed.merge(segments); follow(proxy) }
                 .onChange(of: controller.workspaceDraft) { _, _ in follow(proxy) }
@@ -144,8 +158,8 @@ struct WorkspaceView: View {
                     let id = controller.session?.id
                     let rows = await controller.latestWorkspaceRows()
                     guard controller.session?.id == id else { return }
-                    if paneSessionID != id { paneSessionID = id; feed = CaptionFeed() }
-                    feed.resume(latest: rows); hasEarlier = (rows.first?.start ?? 0) > 0.1; follow(proxy)
+                    if paneSessionID != id { paneSessionID = id; feed = CaptionFeed(); selectedCaption = nil }
+                    selectedCaption = nil; feed.resume(latest: rows); hasEarlier = (rows.first?.start ?? 0) > 0.1; follow(proxy)
                 }
                 .transaction { $0.animation = nil }
                 .safeAreaInset(edge: .top, spacing: 0) { compactStatus }
@@ -162,7 +176,12 @@ struct WorkspaceView: View {
                                 Text(controller.course).font(.headline).lineLimit(1)
                                 if !controller.active { Image(systemName: "chevron.down").font(.caption2) }
                             }
-                            Text("英语 → 中文").font(.caption).foregroundStyle(Color.williamSecondary)
+                            if controller.active || controller.busy {
+                                HStack(spacing: 5) {
+                                    Circle().fill(controller.recording ? Color.williamAccent : Color.williamSecondary).frame(width: 5, height: 5)
+                                    Text(recordingState).font(.caption).foregroundStyle(Color.williamSecondary)
+                                }
+                            }
                         }.foregroundStyle(Color(uiColor: .label)).frame(minHeight: 44)
                     }.disabled(controller.active || controller.busy).accessibilityLabel("选择课程，\(controller.course)").accessibilityIdentifier("course-picker")
                 }
@@ -176,138 +195,105 @@ struct WorkspaceView: View {
             .sheet(isPresented: $status) { NavigationStack { DiagnosticsView() } }
             .sheet(isPresented: $courses) { CoursePickerView() }
             .sheet(item: $noteContext) { NoteEditorView(context: $0) }
-            .sheet(isPresented: $savedDetail) {
-                if let session = controller.session { NavigationStack { LessonDetailView(session: session, inSheet: true) } }
+            .navigationDestination(isPresented: $savedDetail) {
+                if let session = controller.session { LessonDetailView(session: session) }
             }
             .alert("结束这节课？", isPresented: $confirmStop) {
                 Button("继续录课", role: .cancel) {}
-                Button("结束并保存") { Task { await controller.stop() } }
+                Button("结束并保存") { Task {
+                    await controller.stop()
+                    if controller.session?.state == .stopped { selectedCaption = nil; savedDetail = true; UINotificationFeedbackGenerator().notificationOccurred(.success) }
+                } }
             } message: { Text("已经录下的音频和文字会保存在「记录」中。") }
         }
     }
     private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(controller.active ? "正在听课堂…" : "把注意力留给课堂。")
-                .font(.title2.weight(.medium))
-            Text(controller.active ? "英文会先出现，中文随后跟上。\n录音独立保存在这台设备。" : "选择课程，开始录音。\n没听清时，低头看一眼中文。")
-                .font(.body).foregroundStyle(Color.williamSecondary).lineSpacing(5)
-            if !controller.active {
-                Button("选择课程") { courses = true }.frame(minHeight: 44)
-                Text("轻点一句可标记，双击可写笔记。")
-                    .font(.footnote).foregroundStyle(Color.williamSecondary)
-            }
-        }.padding(.top, 64).padding(.bottom, 24).frame(maxWidth: .infinity, alignment: .leading)
+        Group {
+            if controller.active { Text("暂无字幕").font(.subheadline).foregroundStyle(Color.williamSecondary) }
+            else { Color.clear.frame(height: 80) }
+        }.padding(.top, 48).frame(maxWidth: .infinity, alignment: .leading)
     }
-    private var compactStatus: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Button { status = true } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: controller.localEnabled ? "iphone" : "text.bubble")
-                    Text(localSummary)
-                    Text("·")
-                    Text(gptSummary)
-                    Spacer(minLength: 4)
-                    Image(systemName: "info.circle")
-                }.font(.caption).foregroundStyle(Color.williamSecondary).frame(minHeight: 44)
-            }.accessibilityLabel("翻译状态与诊断")
-            if !controller.warning.isEmpty {
-                Button("保存或录音遇到问题 · 查看详情") { status = true }
-                    .font(.footnote).foregroundStyle(Color.williamWarning).frame(minHeight: 44).accessibilityIdentifier("system-warning")
-            } else if !controller.speechError.isEmpty {
-                Button("英文暂时不可用 · 点按重试") { Task { await controller.retrySpeech() } }
-                    .font(.footnote).foregroundStyle(Color.williamWarning).frame(minHeight: 44)
-            } else if controller.mode == .mock {
-                Text("演示内容，不代表真实翻译。请在设置中启用 OpenAI。")
-                    .font(.caption).foregroundStyle(Color.williamSecondary)
-            }
-        }.padding(.horizontal, 22).padding(.bottom, 6).background(.background)
+    @ViewBuilder private var compactStatus: some View {
+        if !controller.warning.isEmpty {
+            Button("录音或保存异常") { status = true }
+                .font(.footnote).foregroundStyle(Color.williamWarning).frame(minHeight: 44).accessibilityIdentifier("system-warning")
+        } else if !controller.speechError.isEmpty {
+            Button("转写暂不可用 · 重试") { Task { await controller.retrySpeech() } }
+                .font(.footnote).foregroundStyle(Color.williamWarning).frame(minHeight: 44)
+        } else if controller.mode == .mock {
+            Text("演示模式").font(.caption).foregroundStyle(Color.williamSecondary)
+        }
     }
     private var controls: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 8) {
-                Circle().fill(controller.recording && !controller.starting && !controller.stopping ? Color.williamAccent : Color.williamSecondary).frame(width: 6, height: 6)
-                Text(recordingState).font(.subheadline)
-                Spacer()
-                Text(SessionStore.timestamp(controller.elapsed)).font(.system(.callout, design: .monospaced)).monospacedDigit()
+        VStack(spacing: 16) {
+            HStack(spacing: 18) {
+                Rectangle().fill(Color.williamSecondary.opacity(0.15)).frame(height: 0.5)
+                Text(SessionStore.readingTime(controller.elapsed)).font(.system(.callout, design: .monospaced))
+                    .monospacedDigit().foregroundStyle(Color.williamSecondary).fixedSize()
                     .accessibilityIdentifier("recording-time")
+                Rectangle().fill(Color.williamSecondary.opacity(0.15)).frame(height: 0.5)
             }
             if controller.active {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 12) { pauseButton; stopButton; noteButton }
-                    VStack(spacing: 8) { HStack(spacing: 12) { pauseButton; stopButton }; noteButton }
-                }
+                HStack(spacing: 28) { pauseButton; stopButton; noteButton }
             } else {
-                if controller.session != nil {
-                    Button("查看这节课") { savedDetail = true }.font(.subheadline).frame(minHeight: 44)
-                }
-                Button { Task { await controller.start() } } label: {
-                    Label(controller.busy ? (controller.stopping ? "正在保存…" : "正在准备…") : "开始录音", systemImage: "mic.fill")
-                        .font(.headline).frame(maxWidth: .infinity, minHeight: 52)
-                }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule).disabled(controller.busy)
-                    .accessibilityIdentifier("start-recording")
+                Button { Task { await controller.start(); UIImpactFeedbackGenerator(style: .light).impactOccurred() } } label: {
+                    Group {
+                        if controller.busy { ProgressView().tint(Color(uiColor: .systemBackground)) }
+                        else { Image(systemName: "mic.fill").font(.system(size: 25)) }
+                    }.frame(width: 58, height: 58).foregroundStyle(Color(uiColor: .systemBackground))
+                        .background(Color.williamAccent, in: Circle())
+                }.buttonStyle(.plain).disabled(controller.busy).accessibilityLabel("开始录音").accessibilityIdentifier("start-recording")
             }
-        }.frame(maxWidth: 760).padding(.horizontal, 22).padding(.top, 14).padding(.bottom, 12)
+        }.frame(maxWidth: 720).padding(.horizontal, 24).padding(.top, 14).padding(.bottom, 14)
             .frame(maxWidth: .infinity).background(.bar)
     }
-    private var localSummary: String {
-        if !controller.localEnabled { return "本机已关闭" }
-        if controller.localStatus.contains("未准备") || controller.localStatus.contains("需要准备") { return "本机待准备" }
-        if controller.localStatus.contains("不可用") || controller.localStatus.contains("不支持") { return "本机不可用" }
-        if controller.localStatus.contains("超时") { return "本机暂时超时" }
-        return "本机快显"
-    }
-    private var gptSummary: String {
-        if controller.mode == .mock { return "演示翻译" }
-        if Keychain.load() == nil { return "GPT 未配置" }
-        if controller.translationStatus.contains("翻译中") { return "GPT 正在完善" }
-        if controller.translationStatus.contains("暂停") || controller.translationStatus.contains("取消") || controller.translationStatus.contains("不可用") { return "GPT 暂缓" }
-        return "GPT 最终版"
-    }
     private var recordingState: String {
-        if controller.starting { return "正在准备录音…" }
-        if controller.stopping { return "正在保存…" }
+        if controller.starting { return "正在准备" }
+        if controller.stopping { return "正在保存" }
         switch controller.session?.state {
         case .recording: return "录音中"
         case .paused: return "已暂停"
         case .interrupted: return "录音已中断"
-        case .stopped, .recovered: return controller.elapsed > 0 ? "录音已保存" : "录音未开始"
-        case nil: return "准备就绪"
+        case .stopped, .recovered: return "已保存"
+        case nil: return ""
         }
     }
     private var pauseButton: some View {
-        Button { Task { await controller.pauseOrResume() } } label: {
-            Label(controller.recording ? "暂停" : "继续", systemImage: controller.recording ? "pause.fill" : "play.fill")
-                .fixedSize(horizontal: true, vertical: false)
-                .frame(maxWidth: .infinity, minHeight: 48)
-        }.buttonStyle(.bordered).buttonBorderShape(.capsule).disabled(controller.busy).accessibilityIdentifier("pause-recording")
+        Button { Task { await controller.pauseOrResume(); UIImpactFeedbackGenerator(style: .light).impactOccurred() } } label: {
+            Image(systemName: controller.recording ? "pause.fill" : "play.fill").font(.system(size: 21))
+                .frame(width: 68, height: 48).background(Color.williamAccent.opacity(0.07), in: Capsule())
+        }.buttonStyle(.plain).disabled(controller.busy).accessibilityLabel(controller.recording ? "暂停" : "继续").accessibilityIdentifier("pause-recording")
     }
     private var stopButton: some View {
-        Button { confirmStop = true } label: { Label("停止", systemImage: "stop.fill").fixedSize(horizontal: true, vertical: false).frame(maxWidth: .infinity, minHeight: 48) }
-            .buttonStyle(.borderedProminent).buttonBorderShape(.capsule).tint(.primary).disabled(controller.busy)
-            .foregroundStyle(Color(uiColor: .systemBackground))
-            .accessibilityIdentifier("stop-recording")
+        Button { confirmStop = true } label: {
+            Image(systemName: "stop.fill").font(.system(size: 23)).frame(width: 86, height: 52)
+                .foregroundStyle(Color(uiColor: .systemBackground)).background(Color.williamAccent, in: Capsule())
+        }.buttonStyle(.plain).disabled(controller.busy).accessibilityLabel("停止").accessibilityIdentifier("stop-recording")
     }
     private var noteButton: some View {
         Button {
             Task {
-                if let caption = controller.workspaceDraft ?? feed.rows.last.map({ WorkspaceCaption($0) }) { await controller.toggleMark(caption) }
+                if let caption = markTarget { await controller.toggleMark(caption) }
                 else if let session = controller.session { _ = await controller.writeNote(LectureNote(offset: controller.elapsed), session: session.id) }
             }
-        } label: { Label("标记", systemImage: "bookmark").fixedSize(horizontal: true, vertical: false).frame(maxWidth: .infinity, minHeight: 48) }
-            .buttonStyle(.bordered).buttonBorderShape(.capsule).disabled(controller.noteBusy).accessibilityIdentifier("add-note")
-            .contextMenu { Button("写笔记", systemImage: "square.and.pencil") { newNote() } }
+        } label: {
+            Image(systemName: markTarget.flatMap { controller.note(for: $0.id) }?.marked == true ? "bookmark.fill" : "bookmark")
+                .font(.system(size: 21)).frame(width: 68, height: 48).background(Color.williamAccent.opacity(0.07), in: Capsule())
+        }.buttonStyle(.plain).disabled(controller.noteBusy).accessibilityLabel("标记选中句，未选中时标记最新句").accessibilityIdentifier("add-note")
+            .contextMenu { Button("笔记", systemImage: "square.and.pencil") { newNote() } }
     }
     private func newNote() {
             guard let session = controller.session else { return }
-            let caption = controller.workspaceDraft ?? feed.rows.last.map { WorkspaceCaption($0) }
+            let caption = markTarget
             let note = caption.flatMap { controller.note(for: $0.id) } ?? LectureNote(segmentID: caption?.id, offset: caption?.start ?? controller.elapsed, english: caption?.english ?? "")
             noteContext = NoteContext(sessionID: session.id, note: note)
     }
     private func captionRow(_ caption: WorkspaceCaption) -> some View {
         CaptionTextView(caption: caption, marked: controller.note(for: caption.id)?.marked == true)
             .id(caption.id)
-            .onTapGesture(count: 2) { editNote(caption) }
-            .onTapGesture { Task { await controller.toggleMark(caption) } }
+            .background(selectedCaption?.id == caption.id ? Color.williamAccent.opacity(0.04) : Color.clear)
+            .onTapGesture(count: 2) { selectedCaption = caption; feed.suspend(); Task { await controller.toggleMark(caption) } }
+            .onTapGesture { selectedCaption = caption; feed.suspend() }
             .contextMenu {
                 Button("标记 / 取消标记", systemImage: "bookmark") { Task { await controller.toggleMark(caption) } }
                 Button("写笔记", systemImage: "square.and.pencil") { editNote(caption) }
@@ -332,7 +318,7 @@ struct WorkspaceView: View {
         let id = controller.session?.id
         let rows = await controller.latestWorkspaceRows()
         guard controller.session?.id == id else { return }
-        feed.resume(latest: rows); hasEarlier = (rows.first?.start ?? 0) > 0.1; follow(proxy)
+        selectedCaption = nil; feed.resume(latest: rows); hasEarlier = (rows.first?.start ?? 0) > 0.1; follow(proxy)
     }
     private func earlier() async {
         guard !loadingEarlier, let id = controller.session?.id, let first = feed.rows.first else { return }
@@ -363,7 +349,7 @@ struct NoteEditorView: View {
                     if !context.note.englishSnapshot.isEmpty { Text(context.note.englishSnapshot).font(.subheadline).foregroundStyle(Color.williamSecondary).lineLimit(4) }
                     Toggle("标记这一刻", isOn: $marked)
                 }
-                Section("留给课后复习") { TextEditor(text: $text).frame(minHeight: 160).accessibilityIdentifier("note-text") }
+                Section("笔记") { TextEditor(text: $text).frame(minHeight: 160).accessibilityIdentifier("note-text") }
                 if !error.isEmpty { Section { Text(error).foregroundStyle(Color.williamWarning) } }
                 Text("笔记独立保存，不会修改课堂原文。最多 6,000 字。").font(.caption).foregroundStyle(Color.williamSecondary)
             }
