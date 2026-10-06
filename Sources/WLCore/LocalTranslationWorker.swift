@@ -1,6 +1,12 @@
 import Foundation
 
 public typealias LocalTranslationOperation = @Sendable (String) async throws -> String
+public enum LocalProviderFailure: Error, LocalizedError, Sendable, Equatable {
+    case unavailable, busy
+    public var errorDescription: String? {
+        self == .unavailable ? "英文/简体中文模型未准备，请在设置中准备" : "上一项本机翻译尚未结束"
+    }
+}
 
 /// One real operation at a time. A deadline invalidates callbacks but never pretends
 /// an uncooperative operation has finished or opens a second slot beside it.
@@ -126,8 +132,9 @@ public typealias LocalTranslationOperation = @Sendable (String) async throws -> 
                 if !disabled, !Task.isCancelled, activeID == request {
                     if let stable, let merged = try? await store.applyLocal(stable, session: session, request: request,
                         chinese: nil, at: Date(), error: error.localizedDescription) { onUpdate?(merged) }
-                    disabled = true; clearDraft()
-                    onState?("本机翻译不可用：\(error.localizedDescription)；录音/GPT 继续")
+                    // An ambiguous or empty fragment must not disable the provider for the lecture.
+                    if let failure = error as? LocalProviderFailure, failure == .unavailable { disabled = true; clearDraft() }
+                    onState?("本机翻译未完成：\(error.localizedDescription)；录音/GPT 继续")
                     var errorFields = fields; errorFields["error"] = error.localizedDescription
                     record(Diagnostic("local_translation_error", offset: offset, fields: errorFields))
                 }

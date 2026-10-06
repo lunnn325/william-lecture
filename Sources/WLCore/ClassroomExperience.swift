@@ -46,36 +46,42 @@ public extension SessionStore {
     }
 }
 
-/// Presentation window only. Reading freezes its membership, while updating visible
-/// translations in place. New records continue to be persisted by the unchanged engine.
+/// Scrolling suspends automatic following, never delivery of new captions.
+/// Keep a bounded live window; older pages remain available from the session journal.
 public struct CaptionFeed: Sendable {
     public private(set) var rows: [TranscriptSegment] = []
     public private(set) var following = true
     public private(set) var hasNewContent = false
     public let limit: Int
-    public init(limit: Int = 180) { self.limit = max(30, limit) }
+    private var readingCapacity: Int
+    public init(limit: Int = 180) { self.limit = max(30, limit); readingCapacity = max(30, limit) * 2 }
     public mutating func suspend() { following = false }
     public mutating func merge(_ incoming: [TranscriptSegment]) {
         var index = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         for segment in incoming {
             if let prior = index[segment.id] { index[segment.id] = segment.mergingDisplay(prior) }
-            else if following { index[segment.id] = segment }
-            else { hasNewContent = true }
+            else {
+                index[segment.id] = segment
+                if !following { hasNewContent = true }
+            }
         }
         rows = index.values.sorted { $0.start == $1.start ? $0.id.uuidString < $1.id.uuidString : $0.start < $1.start }
-        if following && rows.count > limit { rows.removeFirst(rows.count - limit) }
+        let capacity = following ? limit : readingCapacity
+        if rows.count > capacity { rows.removeFirst(rows.count - capacity) }
     }
     public mutating func resume(latest: [TranscriptSegment]) {
-        following = true; hasNewContent = false; rows = []; merge(latest)
+        following = true; hasNewContent = false; readingCapacity = limit * 2; rows = []; merge(latest)
     }
     public mutating func prepend(_ older: [TranscriptSegment]) {
         following = false
         let existing = Set(rows.map(\.id))
         var unique: [UUID: TranscriptSegment] = [:]
         for segment in older where !existing.contains(segment.id) { unique[segment.id] = segment.mergingDisplay(unique[segment.id] ?? segment) }
+        // Explicit paging can retain more history; live arrivals alone cannot grow it.
+        readingCapacity = max(readingCapacity, min(limit * 20, rows.count + unique.count))
         rows = unique.values.sorted { $0.start < $1.start } + rows
-        // Bound the reading snapshot as well. Older-page loading never adds newest traffic.
-        if rows.count > limit * 2 { rows.removeLast(rows.count - limit * 2) }
+        // Never evict the newest captions to make space for an older page.
+        if rows.count > readingCapacity { rows.removeFirst(rows.count - readingCapacity) }
     }
 }
 

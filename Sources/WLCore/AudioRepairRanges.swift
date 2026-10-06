@@ -4,6 +4,15 @@ public struct AudioRepairRange: Sendable, Equatable {
     public var start: Double
     public var end: Double
     public init(start: Double, end: Double) { self.start = start; self.end = end }
+    /// Audio after the last word is often silence, not lost transcription.
+    public static func unfinishedTail(finalEnd: Double, audioEnd: Double, partial: SpeechPiece?, failed: Bool) -> AudioRepairRange? {
+        let start = max(0, finalEnd)
+        guard audioEnd.isFinite, audioEnd > start + 0.1 else { return nil }
+        if failed { return .init(start: start, end: audioEnd) }
+        guard let partial, partial.end > start + 0.1,
+              !partial.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return .init(start: start, end: min(audioEnd, partial.end))
+    }
     public static func uncovered(_ ranges: [AudioRepairRange], covered: [AudioRepairRange]) -> [AudioRepairRange] {
         var merged: [AudioRepairRange] = []
         for r in ranges.filter({ $0.start.isFinite && $0.end.isFinite && $0.end > $0.start }).sorted(by: { $0.start < $1.start }) {

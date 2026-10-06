@@ -255,6 +255,9 @@ private final class SpeechInputBridge: @unchecked Sendable {
         let status = await AssetInventory.status(forModules: modules)
         onEvent?(.diagnostic("speech_asset_status", ["locale": locale.identifier, "status": String(describing: status)]))
         onEvent?(.status("英文模型：\(String(describing: status))"))
+        // Installed models are sufficient. An optional installation request can also
+        // describe an update; it must not make an installed module appear missing.
+        if case .installed = status { return }
         if let request = try await AssetInventory.assetInstallationRequest(supporting: modules) {
             guard mayInstall else { throw WLFailure.message("英文模型未安装，请在设置中准备；原始录音继续保存") }
             onEvent?(.status("下载英文模型…"))

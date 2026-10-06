@@ -24,15 +24,30 @@ public struct SSEParser: Sendable {
     }
 }
 
+public enum TranslationResponseFailure: Error, LocalizedError, Sendable, Equatable {
+    case incomplete, refused
+    public var errorDescription: String? {
+        self == .incomplete ? "翻译响应未完整返回" : "该段翻译未返回可用内容"
+    }
+}
+
 public enum TranslationEvent {
-    case delta(String), completed, ignored
+    case delta(String), textDone(String), completed, ignored
     public static func decode(_ json: [String: Any]) throws -> Self {
         switch json["type"] as? String {
         case "response.output_text.delta": return .delta(json["delta"] as? String ?? "")
+        case "response.output_text.done": return .textDone(json["text"] as? String ?? "")
         case "response.completed": return .completed
-        case "response.failed", "response.incomplete", "error", "response.refusal.delta":
-            throw WLFailure.message("Translation stream failed or refused (\(json["type"] as? String ?? "error"))")
+        case "response.failed", "response.incomplete", "error": throw TranslationResponseFailure.incomplete
+        case "response.refusal.delta", "response.refusal.done": throw TranslationResponseFailure.refused
         default: return .ignored
         }
+    }
+    public static func completedText(_ json: [String: Any]) -> String? {
+        guard json["type"] as? String == "response.completed", let response = json["response"] as? [String: Any],
+              let output = response["output"] as? [[String: Any]] else { return nil }
+        let text = output.flatMap { $0["content"] as? [[String: Any]] ?? [] }
+            .filter { $0["type"] as? String == "output_text" }.compactMap { $0["text"] as? String }.joined()
+        return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
     }
 }

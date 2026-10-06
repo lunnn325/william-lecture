@@ -26,7 +26,7 @@ import WLCore
                 }
             }
             do {
-                try await service.start(localeIdentifier: UserDefaults.standard.string(forKey: "speechLocale") ?? "en-AU")
+                try await service.start(localeIdentifier: session.speechLocale ?? UserDefaults.standard.string(forKey: "speechLocale") ?? "en-AU")
                 var fed = false
                 for name in files {
                     guard let fileStart = offsets[name] else { throw WLFailure.message("录音片段缺少时间信息") }

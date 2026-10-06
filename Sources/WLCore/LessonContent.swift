@@ -115,6 +115,7 @@ public struct LessonContent: Codable, Sendable {
     public var overview: String?
     public var outline: [StudyNode]
     public var error: String?
+    public var audioRepairWarning: String?
     public var updatedAt: Date
     public init(sessionID: UUID, segments: [TranscriptSegment]) {
         self.sessionID = sessionID; fingerprint = Self.fingerprint(segments); state = .pending

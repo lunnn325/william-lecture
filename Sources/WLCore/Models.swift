@@ -23,6 +23,7 @@ public struct LectureSession: Codable, Identifiable, Sendable {
     public var title: String?
     public var preview: String?
     public var markCount: Int?
+    public var speechLocale: String?
     public var displayTitle: String { (title?.isEmpty == false ? title : nil) ?? (course.isEmpty || course == "未命名课程" ? "未分类课程" : course) }
     public init(course: String, now: Date = Date()) {
         id = UUID(); self.course = course; startedAt = now
@@ -72,6 +73,8 @@ public struct TranscriptSegment: Codable, Identifiable, Sendable, Equatable {
     public var gptRevision: Int?
     public var gptRequestID: UUID?
     public var gptDeferred: Bool?
+    /// Ordered actor commits, independent of request timestamps and callback delivery.
+    public var translationUpdate: Int?
     public var sourceRevision: Int { max(1, revision ?? 1) }
     public var validLocalChinese: String? {
         guard localRevision == sourceRevision, CaptionSource.normalized(localSourceText ?? "") == CaptionSource.normalized(english),
@@ -90,9 +93,9 @@ public struct TranscriptSegment: Codable, Identifiable, Sendable, Equatable {
     public var phase: CaptionPhase {
         if finalChinese != nil { return .final }
         if validLocalChinese != nil && (status == .failed || gptDeferred == true || error != nil) { return .localOnly }
-        if status == .pending && submittedAt != nil && gptRequestID != nil { return .gptTranslating }
+        if status == .pending && error == nil && submittedAt != nil && gptRequestID != nil { return .gptTranslating }
         if validLocalChinese != nil { return .localDraft }
-        return status == .failed ? .failed : .queuedForGPT
+        return status == .failed || error != nil ? .failed : .queuedForGPT
     }
     /// Actor writes are authoritative; callbacks can arrive in the opposite order.
     /// Merge display snapshots without ever writing an in-memory stream to disk.
@@ -100,6 +103,7 @@ public struct TranscriptSegment: Codable, Identifiable, Sendable, Equatable {
         guard id == prior.id else { return self }
         if sourceRevision < prior.sourceRevision { return prior }
         guard sourceRevision == prior.sourceRevision, english == prior.english else { return self }
+        if (translationUpdate ?? 0) < (prior.translationUpdate ?? 0) { return prior }
         var merged = self
         if (prior.localCompletedAt ?? .distantPast) > (localCompletedAt ?? .distantPast) {
             merged.localChinese = prior.localChinese; merged.localSourceText = prior.localSourceText

@@ -30,8 +30,7 @@ struct LectureRootView: View {
     @Environment(\.scenePhase) private var phase
     var body: some View {
         TabView {
-            WorkspaceView().tabItem { Label("录课", systemImage: "waveform") }
-            HistoryView().tabItem { Label("记录", systemImage: "clock") }
+            WorkspaceView().tabItem { Label("首页", systemImage: "house") }
             NavigationStack { LectureSettingsView() }.tabItem { Label("设置", systemImage: "gearshape") }
         }
         .tint(.williamAccent)
@@ -44,6 +43,14 @@ struct CaptionTextView: View {
     var marked = false
     @ScaledMetric(relativeTo: .body) private var chineseSize = 22.0
     @ScaledMetric(relativeTo: .body) private var englishSize = 17.0
+    private var missingChinese: String {
+        switch caption.phase {
+        case .transcribing: return "…"
+        case .gptTranslating: return "翻译处理中"
+        case .failed: return "翻译未完成"
+        default: return "等待翻译"
+        }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -51,7 +58,7 @@ struct CaptionTextView: View {
                     .accessibilityIdentifier("caption-english-\(caption.id.uuidString)")
                 if marked { Image(systemName: "bookmark.fill").font(.caption).foregroundStyle(.tint).accessibilityLabel("已标记").accessibilityIdentifier("caption-mark-\(caption.id.uuidString)") }
             }
-            Text(caption.chinese ?? (caption.phase == .failed ? "翻译未完成" : "翻译处理中"))
+            Text(caption.chinese ?? missingChinese)
                 .font(caption.chinese == nil ? .footnote : .system(size: chineseSize, weight: .regular)).lineSpacing(6)
                 .foregroundStyle(caption.chinese == nil ? Color.williamSecondary : Color.primary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -82,9 +89,9 @@ struct WorkspaceView: View {
     @State private var hasEarlier = false
     @State private var paneSessionID: UUID?
     @State private var selectedCaption: WorkspaceCaption?
+    @State private var savedSession: LectureSession?
     private var live: WorkspaceCaption? {
-        if feed.following { return controller.workspaceDraft }
-        return selectedCaption.flatMap { chosen in feed.rows.contains(where: { $0.id == chosen.id }) ? nil : chosen }
+        controller.workspaceDraft
     }
     private var markTarget: WorkspaceCaption? {
         if let chosen = selectedCaption {
@@ -96,75 +103,91 @@ struct WorkspaceView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 24) {
-                        if feed.rows.isEmpty && live == nil { emptyState }
-                        if hasEarlier {
-                            Button(loadingEarlier ? "正在读取…" : "查看更早字幕") { Task { await earlier() } }
-                                .font(.subheadline).frame(minHeight: 44).disabled(loadingEarlier)
+            Group {
+                if controller.active || controller.starting || controller.stopping {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 24) {
+                                if feed.rows.isEmpty && live == nil { emptyState }
+                                if hasEarlier {
+                                    Button(loadingEarlier ? "正在读取…" : "查看更早字幕") { Task { await earlier() } }
+                                        .font(.subheadline).frame(minHeight: 44).disabled(loadingEarlier)
+                                }
+                                ForEach(feed.rows) { segment in
+                                    let caption = WorkspaceCaption(segment, chinese: controller.captionChinese(segment))
+                                    captionRow(caption)
+                                }
+                                if let live { captionRow(live) }
+                                Color.clear.frame(height: 8).id("caption-bottom")
+                            }
+                            .frame(maxWidth: UIDevice.current.userInterfaceIdiom == .pad ? .infinity : 720, alignment: .leading)
+                            .padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 12)
+                            .frame(maxWidth: .infinity)
                         }
-                        ForEach(feed.rows) { segment in
-                            let caption = WorkspaceCaption(segment, chinese: controller.captionChinese(segment))
-                            captionRow(caption)
+                        .accessibilityIdentifier("caption-scroll")
+                        .defaultScrollAnchor(.bottom, for: .initialOffset)
+                        .defaultScrollAnchor(feed.following ? .bottom : .top, for: .sizeChanges)
+                        .onScrollGeometryChange(for: CGSize.self) { $0.containerSize } action: { _, size in viewportSize = size }
+                        .task(id: viewportSize) {
+                            let sessionID = controller.session?.id
+                            guard feed.following, viewportSize != .zero else { return }
+                            // Rotation changes the lazy stack's measured heights across several layouts.
+                            // Re-anchor after it settles; cancellation prevents a prior resize or reader
+                            // gesture from dragging the viewport back to the end.
+                            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+                            guard !Task.isCancelled, feed.following, controller.session?.id == sessionID else { return }
+                            proxy.scrollTo("caption-bottom", anchor: .bottom)
                         }
-                        if let live { captionRow(live) }
-                        Color.clear.frame(height: 8).id("caption-bottom")
-                    }
-                    .frame(maxWidth: UIDevice.current.userInterfaceIdiom == .pad ? .infinity : 720, alignment: .leading)
-                    .padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 12)
-                    .frame(maxWidth: .infinity)
-                }
-                .accessibilityIdentifier("caption-scroll")
-                .defaultScrollAnchor(.bottom, for: .initialOffset)
-                .defaultScrollAnchor(feed.following ? .bottom : .top, for: .sizeChanges)
-                .onScrollGeometryChange(for: CGSize.self) { $0.containerSize } action: { _, size in viewportSize = size }
-                .task(id: viewportSize) {
-                    let sessionID = controller.session?.id
-                    guard feed.following, viewportSize != .zero else { return }
-                    // Rotation changes the lazy stack's measured heights across several layouts.
-                    // Re-anchor after it settles; cancellation prevents a prior resize or reader
-                    // gesture from dragging the viewport back to the end.
-                    do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
-                    guard !Task.isCancelled, feed.following, controller.session?.id == sessionID else { return }
-                    proxy.scrollTo("caption-bottom", anchor: .bottom)
-                }
-                .onScrollGeometryChange(for: Bool.self) { geometry in
-                    geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height + geometry.contentInsets.bottom - 80
-                } action: { _, value in nearBottom = value }
-                .onScrollPhaseChange { _, phase in
-                    if phase == .interacting { feed.suspend() }
-                    if phase == .idle && nearBottom && !feed.following && selectedCaption == nil {
-                        Task { await latest(proxy) }
-                    }
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    if !feed.following {
-                        Button { Task { await latest(proxy) } } label: {
-                            Image(systemName: "arrow.down").font(.subheadline).frame(width: 44, height: 44)
+                        .onScrollGeometryChange(for: Bool.self) { geometry in
+                            geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height + geometry.contentInsets.bottom - 80
+                        } action: { _, value in nearBottom = value }
+                        .onScrollPhaseChange { _, phase in
+                            if phase == .interacting { feed.suspend() }
+                            if phase == .idle && nearBottom && !feed.following {
+                                Task { await latest(proxy) }
+                            }
                         }
-                        .buttonStyle(.bordered).buttonBorderShape(.circle).accessibilityLabel("回到最新")
-                        .padding(.trailing, 22).padding(.bottom, 12).accessibilityIdentifier("follow-latest")
+                        .overlay(alignment: .bottomTrailing) {
+                            if !feed.following {
+                                Button { Task { await latest(proxy) } } label: {
+                                    Image(systemName: "arrow.down").font(.subheadline).frame(width: 44, height: 44)
+                                }
+                                .buttonStyle(.bordered).buttonBorderShape(.circle).accessibilityLabel("回到最新")
+                                .padding(.trailing, 22).padding(.bottom, 12).accessibilityIdentifier("follow-latest")
+                            }
+                        }
+                        .overlay(alignment: .topTrailing) {
+                            #if DEBUG
+                            if controller.isUIFixture && ProcessInfo.processInfo.arguments.contains("--wl-live-arrival") {
+                                Button("模拟新增字幕") { Task { await controller.appendUIFixtureCaption() } }
+                                    .accessibilityIdentifier("fixture-append-caption")
+                            }
+                            #endif
+                        }
+                        .onChange(of: controller.latestCaptionUpdate) { _, segment in
+                            if let segment {
+                                if selectedCaption?.id == segment.id { selectedCaption = WorkspaceCaption(segment, chinese: controller.captionChinese(segment)) }
+                                feed.merge([segment]); follow(proxy)
+                            }
+                        }
+                        .onChange(of: controller.visible) { _, segments in feed.merge(segments); follow(proxy) }
+                        .onChange(of: controller.workspaceDraft) { _, _ in follow(proxy) }
+                        .task(id: controller.session?.id) {
+                            let id = controller.session?.id
+                            let rows = await controller.latestWorkspaceRows()
+                            guard controller.session?.id == id else { return }
+                            if paneSessionID != id { paneSessionID = id; feed = CaptionFeed(); selectedCaption = nil }
+                            selectedCaption = nil; feed.resume(latest: rows); hasEarlier = (rows.first?.start ?? 0) > 0.1; follow(proxy)
+                        }
+                        .transaction { $0.animation = nil }
+                        .safeAreaInset(edge: .top, spacing: 0) { compactStatus }
+                        .safeAreaInset(edge: .bottom, spacing: 0) { controls }
                     }
+                } else {
+                    HistoryList()
+                        .safeAreaInset(edge: .top, spacing: 0) { compactStatus }
+                        .safeAreaInset(edge: .bottom, spacing: 0) { controls }
                 }
-                .onChange(of: controller.latestCaptionUpdate) { _, segment in
-                    if let segment {
-                        if selectedCaption?.id == segment.id { selectedCaption = WorkspaceCaption(segment, chinese: controller.captionChinese(segment)) }
-                        feed.merge([segment]); follow(proxy)
-                    }
-                }
-                .onChange(of: controller.visible) { _, segments in feed.merge(segments); follow(proxy) }
-                .onChange(of: controller.workspaceDraft) { _, _ in follow(proxy) }
-                .task(id: controller.session?.id) {
-                    let id = controller.session?.id
-                    let rows = await controller.latestWorkspaceRows()
-                    guard controller.session?.id == id else { return }
-                    if paneSessionID != id { paneSessionID = id; feed = CaptionFeed(); selectedCaption = nil }
-                    selectedCaption = nil; feed.resume(latest: rows); hasEarlier = (rows.first?.start ?? 0) > 0.1; follow(proxy)
-                }
-                .transaction { $0.animation = nil }
-                .safeAreaInset(edge: .top, spacing: 0) { compactStatus }
-                .safeAreaInset(edge: .bottom, spacing: 0) { controls }
             }
             .background(Color(uiColor: .systemBackground))
             .navigationTitle(controller.active ? controller.course : "William Lecture")
@@ -195,17 +218,17 @@ struct WorkspaceView: View {
             .sheet(isPresented: $settings) { NavigationStack { LectureSettingsView(inSheet: true) } }
             .sheet(isPresented: $status) { NavigationStack { DiagnosticsView() } }
             .sheet(isPresented: $courses) { CoursePickerView() }
-            .sheet(item: $noteContext) { NoteEditorView(context: $0) }
+            .sheet(item: $noteContext) { NoteEditorView(context: $0).id($0.id) }
             .navigationDestination(isPresented: $savedDetail) {
-                if let session = controller.session { LessonDetailView(session: session) }
+                if let session = savedSession { LessonDetailView(session: session) }
             }
             .alert("结束这节课？", isPresented: $confirmStop) {
                 Button("继续录课", role: .cancel) {}
                 Button("结束并保存") { Task {
                     await controller.stop()
-                    if controller.session?.state == .stopped { selectedCaption = nil; savedDetail = true; UINotificationFeedbackGenerator().notificationOccurred(.success) }
+                    if let session = controller.session, session.state == .stopped { selectedCaption = nil; savedSession = session; savedDetail = true; UINotificationFeedbackGenerator().notificationOccurred(.success) }
                 } }
-            } message: { Text("已经录下的音频和文字会保存在「记录」中。") }
+            } message: { Text("音频和文字将保存在课堂记录中。") }
         }
     }
     private var emptyState: some View {
@@ -218,8 +241,11 @@ struct WorkspaceView: View {
         if !controller.warning.isEmpty {
             Button("录音或保存异常") { status = true }
                 .font(.footnote).foregroundStyle(Color.williamWarning).frame(minHeight: 44).accessibilityIdentifier("system-warning")
-        } else if !controller.speechError.isEmpty {
+        } else if controller.active && !controller.speechError.isEmpty {
             Button("转写暂不可用 · 重试") { Task { await controller.retrySpeech() } }
+                .font(.footnote).foregroundStyle(Color.williamWarning).frame(minHeight: 44)
+        } else if controller.active && controller.translationBlocked {
+            Button("翻译暂不可用") { status = true }
                 .font(.footnote).foregroundStyle(Color.williamWarning).frame(minHeight: 44)
         } else if controller.mode == .mock {
             Text("演示模式").font(.caption).foregroundStyle(Color.williamSecondary)
@@ -227,12 +253,14 @@ struct WorkspaceView: View {
     }
     private var controls: some View {
         VStack(spacing: 16) {
+            if controller.active || controller.starting || controller.stopping {
             HStack(spacing: 18) {
                 Rectangle().fill(Color.williamSecondary.opacity(0.15)).frame(height: 0.5)
                 Text(SessionStore.readingTime(controller.elapsed)).font(.system(.callout, design: .monospaced))
                     .monospacedDigit().foregroundStyle(Color.williamSecondary).fixedSize()
                     .accessibilityIdentifier("recording-time")
                 Rectangle().fill(Color.williamSecondary.opacity(0.15)).frame(height: 0.5)
+            }
             }
             if controller.active {
                 ViewThatFits(in: .horizontal) {
@@ -298,14 +326,10 @@ struct WorkspaceView: View {
             .background(selectedCaption?.id == caption.id ? Color.williamAccent.opacity(0.04) : Color.clear)
             .onTapGesture(count: 2) { selectedCaption = caption; feed.suspend(); Task { await controller.toggleMark(caption) } }
             .onTapGesture { selectedCaption = caption; feed.suspend() }
-            .contextMenu {
-                Button("标记 / 取消标记", systemImage: "bookmark") { Task { await controller.toggleMark(caption) } }
-                Button("写笔记", systemImage: "square.and.pencil") { editNote(caption) }
-                Button("复制英文", systemImage: "doc.on.doc") { UIPasteboard.general.string = caption.english }
-                if let chinese = caption.chinese { Button("复制中文", systemImage: "doc.on.doc") { UIPasteboard.general.string = chinese } }
-            }
+            .onLongPressGesture(minimumDuration: 0.5) { selectedCaption = caption; feed.suspend(); editNote(caption) }
             .accessibilityAction(named: "标记此句") { Task { await controller.toggleMark(caption) } }
             .accessibilityAction(named: "写笔记") { editNote(caption) }
+            .accessibilityAction(named: "复制英文") { UIPasteboard.general.string = caption.english }
             .onAppear { controller.setRowVisible(caption.id, true); controller.captionDidRender(id: caption.id, english: caption.english) }
             .onDisappear { controller.setRowVisible(caption.id, false) }
             .onChange(of: caption) { _, _ in controller.captionDidRender(id: caption.id, english: caption.english) }
@@ -350,7 +374,7 @@ struct NoteEditorView: View {
         NavigationStack {
             Form {
                 Section(SessionStore.timestamp(context.note.offset)) {
-                    if !context.note.englishSnapshot.isEmpty { Text(context.note.englishSnapshot).font(.subheadline).foregroundStyle(Color.williamSecondary).lineLimit(4) }
+                    if !context.note.englishSnapshot.isEmpty { Text(context.note.englishSnapshot).font(.subheadline).foregroundStyle(Color.williamSecondary).lineLimit(4).accessibilityIdentifier("note-source") }
                     Toggle("标记这一刻", isOn: $marked)
                 }
                 Section("笔记") { TextEditor(text: $text).frame(minHeight: 160).accessibilityIdentifier("note-text") }

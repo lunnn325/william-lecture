@@ -64,18 +64,19 @@ public final class Translator: @unchecked Sendable {
         for try await line in bytes.lines {
             try Task.checkCancellation()
             guard let object = parser.line(line) else { continue }
-            if object["type"] as? String == "response.completed", let response = object["response"] as? [String: Any] {
+            if ["response.completed", "response.incomplete", "response.failed"].contains(object["type"] as? String ?? ""), let response = object["response"] as? [String: Any] {
                 await usage?(APIResponseMetadata(response))
             }
             switch try TranslationEvent.decode(object) {
             case .delta(let part): text += part; await delta(part)
-            case .completed: completed = true
+            case .textDone(let full): if text.isEmpty { text = full; await delta(full) }
+            case .completed: completed = true; text = TranslationEvent.completedText(object) ?? text
             case .ignored: break
             }
             if completed { break }
         }
         guard completed, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw WLFailure.message("Translation stream ended before successful completion")
+            throw TranslationResponseFailure.incomplete
         }
         return text
     }
@@ -87,6 +88,7 @@ public final class Translator: @unchecked Sendable {
     public var onUpdate: ((TranscriptSegment) -> Void)?
     public var onState: ((String) -> Void)?
     public var hasDraft: ((UUID) -> Bool)?
+    public var onBlocked: ((Bool) -> Void)?
     private var pump: Task<Void, Never>?
     private var requests: [UUID: Task<Void, Never>] = [:]
     private var diagnosticWrites: Task<Void, Never>?
@@ -95,6 +97,8 @@ public final class Translator: @unchecked Sendable {
     private var manuallyCancelled = false
     private var wakeRequested = false
     private var newestNext = false
+    private var retryWake: Task<Void, Never>?
+    private var automaticWakeCount = 0
     private let store: SessionStore
     private let config: TranslatorConfiguration
     private let session: LectureSession
@@ -117,7 +121,7 @@ public final class Translator: @unchecked Sendable {
     }
 
     public func kick(force: Bool = false) {
-        if force { suspended = false; manuallyCancelled = false }
+        if force { retryWake?.cancel(); retryWake = nil; suspended = false; manuallyCancelled = false; onBlocked?(false) }
         guard !suspended else { return }
         if pump != nil { wakeRequested = true; return }
         pump = Task { [weak self] in
@@ -127,7 +131,7 @@ public final class Translator: @unchecked Sendable {
         }
     }
     public func cancel() {
-        manuallyCancelled = true; suspended = true; wakeRequested = false; pump?.cancel()
+        manuallyCancelled = true; suspended = true; wakeRequested = false; pump?.cancel(); retryWake?.cancel(); retryWake = nil
         for task in requests.values { task.cancel() }
     }
     public func networkRestored() {
@@ -163,7 +167,7 @@ public final class Translator: @unchecked Sendable {
                 }
             }
         } catch is CancellationError { }
-        catch { suspended = true; onState?("翻译队列：\(error.localizedDescription)") }
+        catch { suspended = true; onBlocked?(true); onState?("翻译队列：\(error.localizedDescription)") }
     }
 
     private func process(_ original: TranscriptSegment) async {
@@ -194,6 +198,7 @@ public final class Translator: @unchecked Sendable {
                         await self?.stream(part, segment: requestSegment)
                     }
                     try Task.checkCancellation()
+                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw TranslationResponseFailure.incomplete }
                     segment.chinese = text; segment.firstTranslationAt = streamingFirst.removeValue(forKey: segment.id)
                     segment.completedAt = Date(); segment.status = config.mock ? .mock : .completed
                     guard let merged = try await store.applyGPT(segment, session: session.id, request: request, status: segment.status,
@@ -202,6 +207,7 @@ public final class Translator: @unchecked Sendable {
                     }
                     segment = merged
                     streamingText.removeValue(forKey: segment.id); onUpdate?(segment)
+                    automaticWakeCount = 0
                     var completionFields = [
                         "segment": segment.id.uuidString, "mock": "\(config.mock)",
                         "request_ms": "\(Self.ms(segment.completedAt!.timeIntervalSince(submittedAt)))"
@@ -215,11 +221,12 @@ public final class Translator: @unchecked Sendable {
                     streamingText.removeValue(forKey: segment.id); streamingFirst.removeValue(forKey: segment.id)
                     if Task.isCancelled { throw CancellationError() }
                     let retryable = (error as? APIError)?.retryable ?? (error is URLError)
+                    let contentRetry = (error as? TranslationResponseFailure) == .incomplete
                     segment.error = error.localizedDescription
                     record(Diagnostic("translation_error", offset: segment.end, fields: [
                         "segment": segment.id.uuidString, "error": error.localizedDescription, "attempt": "\(attempt)"
                     ]))
-                    if retryable && attempt < 3 {
+                    if (retryable || contentRetry) && attempt < 3 {
                         let delay = max(0, min(30, (error as? APIError)?.retryAfter ?? pow(2, Double(attempt))))
                         onState?("翻译暂不可用；已保留英文待处理")
                         try await Task.sleep(for: .seconds(delay))
@@ -228,8 +235,15 @@ public final class Translator: @unchecked Sendable {
                         guard let merged = try await store.applyGPT(segment, session: session.id, request: request,
                             status: segment.status, error: segment.error) else { stale(segment, kind: "error"); return }
                         segment = merged
-                        onUpdate?(segment); suspended = true; automaticRetryAllowed = retryable
-                        onState?("翻译暂停：\(segment.error ?? "未知错误")；可点击补翻译")
+                        onUpdate?(segment)
+                        // Transport/account failures affect the queue; a refused, empty or
+                        // malformed single response affects this segment only.
+                        let global = retryable || error is APIError
+                        if global {
+                            suspended = true; automaticRetryAllowed = retryable; onBlocked?(true)
+                            onState?("翻译暂停：\(segment.error ?? "未知错误")；可点击补翻译")
+                            if retryable { scheduleRecovery() }
+                        } else { onState?("一段翻译未完成；后续字幕继续，可补翻译") }
                         return
                     }
                 }
@@ -239,7 +253,16 @@ public final class Translator: @unchecked Sendable {
             if let token, let merged = try? await store.cancelGPT(segment, session: session.id, request: token) { onUpdate?(merged) }
             onState?("翻译取消；待处理英文已保存")
         } catch {
-            suspended = true; onState?("翻译队列：\(error.localizedDescription)")
+            suspended = true; onBlocked?(true); onState?("翻译队列：\(error.localizedDescription)")
+        }
+    }
+    private func scheduleRecovery() {
+        guard retryWake == nil, automaticWakeCount < 2, !manuallyCancelled else { return }
+        automaticWakeCount += 1
+        retryWake = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            guard let self, !manuallyCancelled else { return }
+            retryWake = nil; kick(force: true)
         }
     }
 

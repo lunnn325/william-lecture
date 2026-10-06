@@ -22,11 +22,11 @@ actor AppleLocalTranslator {
         #endif
     }
     func translate(_ text: String) async throws -> String {
-        guard !translating else { throw WLFailure.message("上一项本机翻译尚未结束") }
+        guard !translating else { throw LocalProviderFailure.busy }
         translating = true; defer { translating = false }
         let ticket = generation
         if session == nil {
-            guard await availability() == .installed else { throw WLFailure.message("英文/简体中文模型未准备，请在设置中准备；录音/GPT 继续") }
+            guard await availability() == .installed else { throw LocalProviderFailure.unavailable }
             try Task.checkCancellation()
             guard generation == ticket else { throw CancellationError() }
             if #available(iOS 26.4, *) {

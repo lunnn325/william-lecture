@@ -22,6 +22,7 @@ import WLAppleAudio
     @Published var speechStatus = "未启动"
     @Published var speechError = ""
     @Published var translationStatus = "模拟模式"
+    @Published var translationBlocked = false
     @Published var localStatus = "尚未检查本机模型"
     @Published var localEnabled = UserDefaults.standard.object(forKey: "localTranslationEnabled") as? Bool ?? true
     @Published var warning = ""
@@ -93,9 +94,9 @@ import WLAppleAudio
                 #endif
                 await refreshHistory()
                 #if DEBUG
-                if !isUIFixture { prewarm(); processing.wake() }
+                if !isUIFixture { prewarm(); await processing.recoverLegacySpeechFailures() }
                 #else
-                prewarm(); processing.wake()
+                prewarm(); await processing.recoverLegacySpeechFailures()
                 #endif
             } catch { warning = error.localizedDescription }
         }
@@ -139,7 +140,8 @@ import WLAppleAudio
         await persistence?.value
         do {
             if let space = try await store.availableCapacityForRecording(), space < 500 * 1024 * 1024 { throw WLFailure.message("可用空间不足 500 MB；请清理后再录音") }
-            let next = LectureSession(course: course.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未命名课程" : course)
+            var next = LectureSession(course: course.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未命名课程" : course)
+            next.speechLocale = locale
             course = next.course
             if !savedCourses.contains(course) { savedCourses.append(course) }
             UserDefaults.standard.set(course, forKey: "selectedCourse")
@@ -277,8 +279,9 @@ import WLAppleAudio
         // Pause and restart have tails too. A later final result must not conceal
         // missing speech immediately before a pause or interrupted analyzer.
         let audioEnd = await recorder?.recordedDuration() ?? session?.recordingSeconds ?? 0
-        if audioEnd > max(0, finalCursor.end) + 0.1 {
-            log("speech_unfinalized_tail", fields: ["range_start": "\(max(0, finalCursor.end))", "range_end": "\(audioEnd)", "replay": "pending"])
+        if let range = AudioRepairRange.unfinishedTail(finalEnd: finalCursor.end, audioEnd: audioEnd,
+            partial: realtimePartial, failed: !speechError.isEmpty) {
+            log("speech_unfinalized_tail", fields: ["range_start": "\(range.start)", "range_end": "\(range.end)", "replay": "pending"])
         }
     }
     private func handleSpeech(_ event: SpeechService.Event) {
@@ -356,7 +359,7 @@ import WLAppleAudio
     private func makeWorker(_ session: LectureSession) {
         let config = TranslatorConfiguration(mock: mode == .mock, model: model, key: Keychain.load())
         if !config.mock && (config.key?.isEmpty ?? true) {
-            worker = nil; translationStatus = "GPT 未配置；本机中文/英文/录音可继续"; return
+            worker = nil; translationBlocked = true; translationStatus = "GPT 未配置；本机中文/英文/录音可继续"; return
         }
         let worker = TranslationWorker(store: store, config: config, session: session)
         worker.onUpdate = { [weak self, weak worker] segment in
@@ -368,6 +371,11 @@ import WLAppleAudio
             self?.translationStatus = state
         }
         worker.hasDraft = { [weak self] id in self?.previewChinese[id] != nil }
+        worker.onBlocked = { [weak self, weak worker] value in
+            guard let worker, self?.worker === worker else { return }
+            self?.translationBlocked = value
+        }
+        translationBlocked = false
         self.worker = worker
     }
     private func updateVisible(_ segment: TranscriptSegment) {
@@ -705,7 +713,7 @@ import WLAppleAudio
     func prepareSpeechModels() async {
         guard !active else { return }
         speechStatus = "正在准备英文模型"
-        do { try await SpeechService.prepareAssets(localeIdentifier: locale); speechStatus = "英文模型已准备"; prewarm() }
+        do { try await SpeechService.prepareAssets(localeIdentifier: locale); speechStatus = "英文模型已准备"; prewarm(); await processing.speechModelsPrepared() }
         catch { speechStatus = "英文模型未准备：\(error.localizedDescription)" }
     }
 }

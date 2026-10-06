@@ -71,6 +71,8 @@ import UIKit
         app.buttons["生成导出文件"].tap()
         waitPreparedFiles(app)
         app.buttons["完成"].firstMatch.tap(); app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(app.scrollViews["classroom-history"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.scrollViews["caption-scroll"].exists, "Stopped captions must not remain on the home page")
         app.buttons["start-recording"].tap()
         XCTAssertTrue(app.buttons["pause-recording"].waitForExistence(timeout: 10))
     }
@@ -82,12 +84,47 @@ import UIKit
         let course = app.textFields["new-course-name"]; XCTAssertTrue(course.waitForExistence(timeout: 5))
         course.tap(); course.typeText("FINN1000"); app.buttons["添加并选择"].tap()
         XCTAssertTrue(app.buttons["course-picker"].label.contains("FINN1000"))
-        selectTab("记录", app: app)
+        selectTab("首页", app: app)
         XCTAssertTrue(app.staticTexts["ECON1111 · 微观经济学"].waitForExistence(timeout: 5)); capture(app, "history")
         selectTab("设置", app: app)
         XCTAssertTrue(app.staticTexts["本机中文"].waitForExistence(timeout: 5)); capture(app, "settings")
         app.swipeUp(); XCTAssertTrue(app.secureTextFields.firstMatch.waitForExistence(timeout: 5)); capture(app, "settings-key")
         app.buttons["状态与诊断"].tap(); XCTAssertTrue(app.staticTexts["当前链路"].waitForExistence(timeout: 5))
+    }
+    func testLongPressNotesBindToPressedSentenceEachTime() {
+        let app = launch(active: true)
+        XCTAssertTrue(app.buttons["pause-recording"].waitForExistence(timeout: 20))
+        let ids = ["20000000-0000-0000-0000-000000000017", "20000000-0000-0000-0000-000000000016"]
+        for (index, id) in ids.enumerated() {
+            let row = app.staticTexts["caption-english-\(id)"]
+            for _ in 0..<5 where !row.isHittable { app.scrollViews["caption-scroll"].swipeDown() }
+            XCTAssertTrue(row.isHittable)
+            let source = row.label
+            row.press(forDuration: 0.8)
+            let noteSource = app.staticTexts["note-source"]
+            XCTAssertTrue(noteSource.waitForExistence(timeout: 5)); XCTAssertEqual(noteSource.label, source)
+            let editor = app.textViews["note-text"]; editor.tap(); editor.typeText("Sentence note \(index)")
+            app.buttons["保存笔记"].tap()
+            XCTAssertTrue(row.waitForExistence(timeout: 5))
+            row.press(forDuration: 0.8)
+            XCTAssertTrue(noteSource.waitForExistence(timeout: 5)); XCTAssertEqual(noteSource.label, source)
+            XCTAssertTrue((editor.value as? String ?? "").contains("Sentence note \(index)"))
+            app.buttons["取消"].tap()
+        }
+    }
+    func testNewCaptionsCanBeReachedByScrollingWithoutArrow() {
+        let app = launch(active: true, extra: ["--wl-live-arrival"])
+        XCTAssertTrue(app.buttons["pause-recording"].waitForExistence(timeout: 20))
+        let scroll = app.scrollViews["caption-scroll"]
+        scroll.swipeDown(); scroll.swipeDown()
+        XCTAssertTrue(app.buttons["follow-latest"].waitForExistence(timeout: 5))
+        app.buttons["fixture-append-caption"].tap()
+        let newest = app.staticTexts["caption-english-20000000-0000-0000-0000-000000000019"]
+        for _ in 0..<8 where !newest.isHittable { scroll.swipeUp() }
+        scroll.swipeUp()
+        XCTAssertTrue(newest.isHittable, "New rows must be in the scroll view while following is suspended")
+        let following = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !app.buttons["follow-latest"].exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [following], timeout: 5), .completed)
     }
     func testDarkAndAccessibilityTypeWorkspace() {
         for (argument, name) in [("--wl-dark", "workspace-dark"), ("--wl-large-type", "workspace-large-type")] {

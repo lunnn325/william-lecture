@@ -133,7 +133,7 @@ public actor SessionStore {
         current.gptRequestID = request; current.gptRevision = current.sourceRevision
         current.attempts += 1; current.submittedAt = at; current.firstTranslationAt = nil; current.completedAt = nil
         current.chinese = nil; current.error = nil; current.status = .pending; current.gptDeferred = false
-        try append(current, session: session); return current
+        return try commitTranslation(current, session: session)
     }
     public func applyGPT(_ source: TranscriptSegment, session: UUID, request: UUID, status: TranslationStatus,
                          chinese: String? = nil, firstAt: Date? = nil, completedAt: Date? = nil, error: String? = nil) throws -> TranscriptSegment? {
@@ -142,13 +142,13 @@ public actor SessionStore {
         current.status = status; current.chinese = chinese; current.firstTranslationAt = firstAt
         current.completedAt = completedAt; current.error = error
         if status != .pending || error != nil { current.gptRequestID = nil }
-        try append(current, session: session); return current
+        return try commitTranslation(current, session: session)
     }
     public func cancelGPT(_ source: TranscriptSegment, session: UUID, request: UUID) throws -> TranscriptSegment? {
         guard var current = try translationSnapshot(source, session: session), current.gptRequestID == request,
               current.status == .pending else { return nil }
         current.gptRequestID = nil; current.submittedAt = nil; current.chinese = nil; current.error = "翻译请求已取消"
-        try append(current, session: session); return current
+        return try commitTranslation(current, session: session)
     }
     public func localPending(_ session: UUID, newestFirst: Bool = false) throws -> TranscriptSegment? {
         try loadTranslationIndex(session)
@@ -160,7 +160,7 @@ public actor SessionStore {
         guard !Task.isCancelled, var current = try translationSnapshot(source, session: session), current.localEnabled == true,
               current.validLocalChinese == nil, current.finalChinese == nil, current.localAttemptedRevision != current.sourceRevision else { return nil }
         current.localRequestID = request; current.localAttemptedRevision = current.sourceRevision; current.localError = nil
-        try append(current, session: session); return current
+        return try commitTranslation(current, session: session)
     }
     public func applyLocal(_ source: TranscriptSegment, session: UUID, request: UUID, chinese: String?, at: Date, error: String? = nil) throws -> TranscriptSegment? {
         guard !Task.isCancelled, var current = try translationSnapshot(source, session: session), current.localRequestID == request else { return nil }
@@ -170,31 +170,37 @@ public actor SessionStore {
             current.localChinese = chinese; current.localSourceText = current.english; current.localRevision = current.sourceRevision
             current.localFirstAt = current.localFirstAt ?? at; current.localCompletedAt = at
         }
-        try append(current, session: session); return current
+        return try commitTranslation(current, session: session)
     }
     public func cancelLocal(_ source: TranscriptSegment, session: UUID, request: UUID) throws {
         guard var current = try translationSnapshot(source, session: session), current.localRequestID == request else { return }
         current.localRequestID = nil; current.localAttemptedRevision = nil
-        try append(current, session: session)
+        _ = try commitTranslation(current, session: session)
     }
     public func resetLocalFailures(_ session: UUID) throws {
         try loadTranslationIndex(session)
         for var current in Array(translationIndex.values) where current.localEnabled == true && current.validLocalChinese == nil && current.finalChinese == nil {
             current.localAttemptedRevision = nil; current.localRequestID = nil; current.localError = nil
-            try append(current, session: session)
+            _ = try commitTranslation(current, session: session)
         }
     }
     public func markLocalDisplayed(_ source: TranscriptSegment, session: UUID, at: Date) throws {
         guard var current = try translationSnapshot(source, session: session), current.localDisplayedAt == nil else { return }
-        current.localDisplayedAt = at; try append(current, session: session)
+        current.localDisplayedAt = at; _ = try commitTranslation(current, session: session)
     }
     public func requeueGPT(_ session: UUID, includeMock: Bool) throws {
         try loadTranslationIndex(session)
         for var current in Array(translationIndex.values) where current.status == .failed || (includeMock && current.status == .mock) {
             current.status = .pending; current.error = nil; current.gptRequestID = nil
             current.chinese = nil; current.submittedAt = nil; current.completedAt = nil
-            try append(current, session: session)
+            _ = try commitTranslation(current, session: session)
         }
+    }
+    private func commitTranslation(_ source: TranscriptSegment, session: UUID) throws -> TranscriptSegment {
+        var current = source
+        current.translationUpdate = (translationIndex[source.id]?.translationUpdate ?? 0) + 1
+        try append(current, session: session)
+        return current
     }
     public func log(_ diagnostic: Diagnostic, session: UUID) throws {
         var safe = diagnostic
@@ -307,6 +313,7 @@ public actor SessionStore {
         let document = original ? nil : try content(id)
         var lines = ["\(markdown ? "# " : "")\(session.displayTitle)", "Session: \(session.id)", "Date: \(session.startedAt.ISO8601Format())", ""]
         if let document, document.state != .completed { lines.append("课后处理：\(document.state.label)。文件为当前快照，缺失内容明确标记。") }
+        if let document, document.audioRepairWarning != nil { lines.append("部分音频尚未补转写；已保存的文字和译文可用，请核对音频与缺口记录。") }
         lines.insert(session.usesRecordingTimeline ? "时间轴：实际录音，暂停不计时。" : "时间轴：旧版课堂，保留暂停空档。", at: 3)
         var gaps: [Diagnostic] = []
         try JSONLines.scan(Diagnostic.self, at: folder(id).appendingPathComponent("diagnostics.jsonl")) {

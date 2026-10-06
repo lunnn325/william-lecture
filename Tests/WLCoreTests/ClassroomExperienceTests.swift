@@ -56,12 +56,12 @@ final class ClassroomExperienceTests: XCTestCase {
             XCTAssertEqual(url.pathExtension, markdown ? "md" : "txt")
         }
     }
-    func testReadingWindowDoesNotMoveWhenNewSpeechArrivesButFinalStillUpgrades() {
+    func testReadingKeepsReceivingNewRowsWithoutResumingAndFinalStillUpgrades() {
         var feed = CaptionFeed(); let first = segment(0), second = segment(3)
         feed.merge([first]); feed.suspend(); feed.merge([second])
         var final = first; final.status = .completed; final.chinese = "最终中文"
         feed.merge([final]); feed.merge([first])
-        XCTAssertEqual(feed.rows.map(\.id), [first.id]); XCTAssertEqual(feed.rows.first?.finalChinese, "最终中文")
+        XCTAssertEqual(feed.rows.map(\.id), [first.id, second.id]); XCTAssertEqual(feed.rows.first?.finalChinese, "最终中文")
         XCTAssertTrue(feed.hasNewContent); XCTAssertFalse(feed.following)
         feed.resume(latest: [final, second]); XCTAssertEqual(feed.rows.count, 2); XCTAssertFalse(feed.hasNewContent)
     }
@@ -69,12 +69,13 @@ final class ClassroomExperienceTests: XCTestCase {
         var feed = CaptionFeed(); var maximum = 0
         for index in 0..<3600 { feed.merge([segment(Double(index) * 3)]); maximum = max(maximum, feed.rows.count) }
         XCTAssertEqual(maximum, 180); XCTAssertEqual(feed.rows.count, 180)
-        let last = feed.rows.last!.id; feed.suspend()
+        feed.suspend()
         for index in 3600..<7200 { feed.merge([segment(Double(index) * 3)]) }
-        XCTAssertEqual(feed.rows.count, 180); XCTAssertEqual(feed.rows.last?.id, last)
+        XCTAssertEqual(feed.rows.count, 360); XCTAssertEqual(feed.rows.last?.start, Double(7199) * 3)
         let older = (0..<500).map { segment(Double($0)) }
         feed.prepend(older + older); feed.merge([])
-        XCTAssertEqual(feed.rows.count, 360); XCTAssertEqual(Set(feed.rows.map(\.id)).count, feed.rows.count)
+        XCTAssertEqual(feed.rows.count, 860); XCTAssertEqual(Set(feed.rows.map(\.id)).count, feed.rows.count)
+        XCTAssertEqual(feed.rows.last?.start, Double(7199) * 3, "Older pages must not evict the latest captions")
         print("V1_FEED_STRESS: equivalent_hours=3 speech_segments=3600 active_rows_max=\(maximum) reading_rows_max=\(feed.rows.count)")
     }
     func testPlaybackUsesRecordedTimeAtChunkBoundaryAndEnd() throws {

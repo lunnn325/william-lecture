@@ -41,6 +41,16 @@ extension LectureController {
             await refreshHistory()
         } catch { warning = error.localizedDescription }
     }
+    func appendUIFixtureCaption() async {
+        guard let selected = session, selected.state == .recording else { return }
+        do {
+            var segment = TranscriptSegment(start: 24, end: 25, english: "New speech remains reachable while reading older captions.")
+            segment.id = UUID(uuidString: "20000000-0000-0000-0000-000000000019")!
+            segment.chinese = "[MOCK] 阅读旧句时，新字幕仍继续加入。"; segment.status = .mock
+            try await store.append(segment, session: selected.id)
+            visible.append(segment); latestCaptionUpdate = segment
+        } catch { warning = error.localizedDescription }
+    }
     private func populateFixture(_ lesson: inout LectureSession) async throws {
         lesson.updateRecordingDuration(24); lesson.audioFiles = ["fixture.caf"]
         try await store.save(lesson)

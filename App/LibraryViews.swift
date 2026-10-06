@@ -2,45 +2,43 @@ import SwiftUI
 import UIKit
 import WLCore
 
-struct HistoryView: View {
+struct HistoryList: View {
     @EnvironmentObject private var controller: LectureController
     @State private var search = ""
     private var filtered: [LectureSession] {
         controller.history.filter { search.isEmpty || $0.course.localizedCaseInsensitiveContains(search) || $0.displayTitle.localizedCaseInsensitiveContains(search) || $0.startedAt.formatted().contains(search) }
     }
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                LazyVStack(spacing: 14) {
-                    if controller.history.isEmpty { ContentUnavailableView("暂无记录", systemImage: "text.book.closed") }
-                    else if filtered.isEmpty { ContentUnavailableView.search(text: search) }
-                    ForEach(filtered) { session in
-                        NavigationLink { LessonDetailView(session: session) } label: {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text(session.displayTitle).font(.headline).foregroundStyle(.primary)
-                                if let preview = session.preview, !preview.isEmpty {
-                                    Text(preview).font(.subheadline).foregroundStyle(Color.williamSecondary).lineLimit(2).lineSpacing(3)
-                                }
-                                HStack(spacing: 6) {
-                                    Text(session.startedAt.formatted(.dateTime.month().day().hour().minute()))
-                                    Text("·"); Text(SessionStore.readingTime(session.duration)).monospacedDigit()
-                                    if let count = session.markCount, count > 0 { Text("·"); Image(systemName: "bookmark"); Text("\(count)") }
-                                    if ![.stopped, .recovered].contains(session.state) { Text("· 录音中") }
-                                    if session.state == .recovered { Text("· 已恢复") }
-                                }.font(.caption).foregroundStyle(Color.williamSecondary)
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
-                                .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
-                                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.williamSecondary.opacity(0.08), lineWidth: 0.5))
-                                .shadow(color: .black.opacity(0.035), radius: 8, y: 3)
-                        }.buttonStyle(.plain)
-                    }
-                }.frame(maxWidth: 720).padding(20).frame(maxWidth: .infinity)
-            }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("课堂记录")
-                .searchable(text: $search, prompt: "课程或日期")
-                .task { await controller.refreshHistory() }
-                .refreshable { await controller.refreshHistory() }
-                .onReceive(controller.processing.$change) { _ in Task { await controller.refreshHistory() } }
-        }
+        ScrollView {
+            LazyVStack(spacing: 14) {
+                if controller.history.isEmpty { ContentUnavailableView("暂无记录", systemImage: "text.book.closed") }
+                else if filtered.isEmpty { ContentUnavailableView.search(text: search) }
+                ForEach(filtered) { session in
+                    NavigationLink { LessonDetailView(session: session) } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(session.displayTitle).font(.headline).foregroundStyle(.primary)
+                            if let preview = session.preview, !preview.isEmpty {
+                                Text(preview).font(.subheadline).foregroundStyle(Color.williamSecondary).lineLimit(2).lineSpacing(3)
+                            }
+                            HStack(spacing: 6) {
+                                Text(session.startedAt.formatted(.dateTime.month().day().hour().minute()))
+                                Text("·"); Text(SessionStore.readingTime(session.duration)).monospacedDigit()
+                                if let count = session.markCount, count > 0 { Text("·"); Image(systemName: "bookmark"); Text("\(count)") }
+                                if ![.stopped, .recovered].contains(session.state) { Text("· 录音中") }
+                                if session.state == .recovered { Text("· 已恢复") }
+                            }.font(.caption).foregroundStyle(Color.williamSecondary)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
+                            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+                            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.williamSecondary.opacity(0.08), lineWidth: 0.5))
+                            .shadow(color: .black.opacity(0.035), radius: 8, y: 3)
+                    }.buttonStyle(.plain).accessibilityIdentifier("history-\(session.id.uuidString)")
+                }
+            }.frame(maxWidth: 720).padding(20).frame(maxWidth: .infinity)
+        }.background(Color(uiColor: .systemGroupedBackground)).accessibilityIdentifier("classroom-history")
+            .searchable(text: $search, prompt: "课程或日期")
+            .task { await controller.refreshHistory() }
+            .refreshable { await controller.refreshHistory() }
+            .onReceive(controller.processing.$change) { _ in Task { await controller.refreshHistory() } }
     }
 }
 
@@ -92,11 +90,20 @@ struct LessonDetailView: View {
                     if let d = document, d.state != .completed {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(d.state.label).font(.caption).foregroundStyle(Color.williamSecondary)
-                            if let message = d.error { Text(message).font(.footnote).foregroundStyle(Color.williamWarning) }
+                            if let message = d.error {
+                                DisclosureGroup("错误详情") { Text(message).font(.footnote).foregroundStyle(Color.williamWarning) }
+                                    .font(.footnote)
+                            }
                             if !d.state.automatic || d.state == .waitingForNetwork {
                                 Button("重试") { Task { await controller.processing.enqueue(session, retry: true); await load() } }.disabled(controller.active)
                             }
                         }
+                    }
+                    if let message = document?.audioRepairWarning {
+                        DisclosureGroup("部分音频尚未补转写") {
+                            Text(message).font(.footnote).foregroundStyle(Color.williamWarning)
+                            Button("重试补处理") { Task { await controller.processing.enqueue(session, retry: true); await load() } }.disabled(controller.active)
+                        }.font(.footnote).foregroundStyle(Color.williamSecondary)
                     }
                     if tab == 0 { transcript }
                     else if tab == 1 { summary }
@@ -129,7 +136,7 @@ struct LessonDetailView: View {
         }
         .sheet(isPresented: $export) { ExportView(session: session) }
         .sheet(isPresented: $sharing) { ActivityShareView(files: shareFiles) }
-        .sheet(item: $noteContext, onDismiss: { Task { await load() } }) { NoteEditorView(context: $0) }
+        .sheet(item: $noteContext, onDismiss: { Task { await load() } }) { NoteEditorView(context: $0).id($0.id) }
         .task {
             playback.recordingActive = { controller.active }
             await load()

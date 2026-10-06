@@ -32,6 +32,24 @@ import WLCore
         }
         wake()
     }
+    func speechModelsPrepared() async {
+        for session in (try? await store.sessions()) ?? [] where [.stopped, .recovered].contains(session.state) {
+            guard let content = try? await store.content(session.id) else { continue }
+            if content.audioRepairWarning != nil || (content.state == .failed && content.error?.contains("Speech") == true) {
+                await enqueue(session, retry: true)
+            }
+        }
+        wake()
+    }
+    /// Resume only an already-requested legacy job, never submit untouched history.
+    func recoverLegacySpeechFailures() async {
+        for session in (try? await store.sessions()) ?? [] where [.stopped, .recovered].contains(session.state) {
+            guard let content = try? await store.content(session.id), content.state == .failed,
+                  content.error?.contains("Speech") == true else { continue }
+            await enqueue(session, retry: true)
+        }
+        wake()
+    }
     func beginLease() {
         guard lease == .invalid else { return }
         lease = UIApplication.shared.beginBackgroundTask(withName: "WL.save-and-process") { [weak self] in
@@ -85,12 +103,19 @@ import WLCore
                 document = LessonContent(sessionID: session.id, segments: currentSources)
             }
             document.state = .repairing; document.error = nil; try await save(&document)
-            try await SpeechAudioRepair.repair(session, store: store)
+            var repairWarning: String?
+            do { try await SpeechAudioRepair.repair(session, store: store) }
+            catch is CancellationError { throw CancellationError() }
+            catch {
+                repairWarning = DiagnosticRedaction.redact(error.localizedDescription)
+                try? await store.log(Diagnostic("audio_repair_deferred", fields: ["error": repairWarning ?? ""]), session: session.id)
+            }
             let sources = try await store.segments(session.id)
             if document.fingerprint != LessonContent.fingerprint(sources) {
                 document = LessonContent(sessionID: session.id, segments: sources)
                 try await save(&document)
             }
+            document.audioRepairWarning = repairWarning
             guard !sources.isEmpty else { throw LessonAPIError.invalid("未识别到内容，录音可回放和导出") }
             guard let key = Keychain.load(), !key.isEmpty else {
                 document.state = .needsConfiguration; document.error = "未配置 OpenAI Key"; try await save(&document); return
@@ -147,6 +172,7 @@ import WLCore
                 let previous = document
                 document = LessonContent(sessionID: session.id, segments: currentSources)
                 document.corrected = currentSources.compactMap { previous.correction(for: $0) }
+                document.audioRepairWarning = previous.audioRepairWarning
             }
             if let e = error as? LessonAPIError, case .budget = e { document.state = .limitReached }
             else if error is URLError || (error as? APIError)?.retryable == true { document.state = .waitingForNetwork }
