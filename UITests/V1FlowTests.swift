@@ -111,11 +111,12 @@ import UIKit
             XCTAssertTrue((editor.value as? String ?? "").contains("Sentence note \(index)"))
             app.buttons["取消"].tap()
             let marker = app.images["caption-mark-\(id)"]
-            row.doubleTap()
             XCTAssertTrue(marker.waitForExistence(timeout: 5))
             row.doubleTap()
             let unmarked = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !marker.exists }, object: nil)
             XCTAssertEqual(XCTWaiter.wait(for: [unmarked], timeout: 5), .completed)
+            row.doubleTap()
+            XCTAssertTrue(marker.waitForExistence(timeout: 5))
         }
     }
     func testNewCaptionsCanBeReachedByScrollingWithoutArrow() {
