@@ -103,10 +103,15 @@ public final class LessonAPI: @unchecked Sendable {
         }
         let schema = Self.object(["title": ["type": "string"], "overview": ["type": "string"],
                                   "outline": ["type": "array", "items": node(2)]])
-        let transcript = sources.map { s in
-            let c = content.correction(for: s)
-            return "\(s.id.uuidString) [\(SessionStore.timestamp(s.start))] \(c?.english ?? s.english)\n\(c?.chinese ?? s.exportChinese ?? "[中文缺失]")"
-        }.joined(separator: "\n")
+        var lines: [String] = []
+        for source in sources {
+            let corrected = content.correction(for: source)
+            let english: String = corrected?.english ?? source.english
+            let chinese: String = corrected?.chinese ?? source.exportChinese ?? "[中文缺失]"
+            let timestamp = SessionStore.timestamp(source.start)
+            lines.append("\(source.id.uuidString) [\(timestamp)] \(english)\n\(chinese)")
+        }
+        let transcript = lines.joined(separator: "\n")
         let input = "\(CourseProfiles.context(course))\nCreate an evidence-led Chinese structured lecture summary: key concepts with English terms, formulas, reasoning, and examples actually present. Distinguish lecturer statements from uncertainty; never add textbook facts, invented exam guidance or inferred numbers. Produce a short descriptive title, one-sentence overview, and 4-12 outline branches with at most 3 levels and 60 total nodes, useful both as notes and a mind map. Every node must cite provided segmentIDs. IDs must be unique. Children use concise labels and body text retains important explanations.\nTRANSCRIPT:\n\(transcript)"
         let data = try await request(model: "gpt-6.1-sol", effort: "high", input: input, schema: schema,
                                      name: "lecture_study", maxOutput: 16384, key: key, store: store, session: content.sessionID)

@@ -110,9 +110,14 @@ private final class SpeechInputBridge: @unchecked Sendable {
         await withCheckedContinuation { done in queue.async {
             do {
                 for output in try self.converter?.finish() ?? [] {
-                    sink?.yield(AnalyzerInput(buffer: output.buffer, bufferStartTime: output.start))
+                    if case .dropped = sink?.yield(AnalyzerInput(buffer: output.buffer, bufferStartTime: output.start)) {
+                        self.reportGap(output.start.seconds, output.start.seconds + Double(output.buffer.frameLength) / output.buffer.format.sampleRate)
+                    }
                 }
             } catch { self.onFailure("Speech PCM finalization: \(SpeechErrorDetails.describe(error))") }
+            self.lock.withLock {
+                if let gap = self.pendingGap { self.onDrop(gap.0, gap.1); self.pendingGap = nil }
+            }
             self.converter = nil; sink?.finish(); done.resume()
         } }
     }

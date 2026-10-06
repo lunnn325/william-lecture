@@ -75,6 +75,10 @@ import WLCore
     private func process(_ session: LectureSession, initial: LessonContent) async {
         var document = initial
         do {
+            let currentSources = try await store.segments(session.id)
+            if document.fingerprint != LessonContent.fingerprint(currentSources) {
+                document = LessonContent(sessionID: session.id, segments: currentSources)
+            }
             document.state = .repairing; document.error = nil; try await save(&document)
             try await SpeechAudioRepair.repair(session, store: store)
             let sources = try await store.segments(session.id)
@@ -131,6 +135,14 @@ import WLCore
             let snapshot = document
             Task { _ = try? await store.saveContent(snapshot); change += 1 }
         } catch {
+            // Replay can persist valid segments before a later Speech error. Rebase the
+            // status snapshot so that a failure remains visible and can be retried.
+            if let currentSources = try? await store.segments(session.id),
+               document.fingerprint != LessonContent.fingerprint(currentSources) {
+                let previous = document
+                document = LessonContent(sessionID: session.id, segments: currentSources)
+                document.corrected = currentSources.compactMap { previous.correction(for: $0) }
+            }
             if let e = error as? LessonAPIError, case .budget = e { document.state = .limitReached }
             else if error is URLError || (error as? APIError)?.retryable == true { document.state = .waitingForNetwork }
             else if let e = error as? APIError, [400, 401, 403, 404].contains(e.status) { document.state = .needsConfiguration }
