@@ -162,6 +162,7 @@ import WLAppleAudio
             await previousWorker?.waitForCancellation()
             await previousLocalWorker?.shutdown()
             makeWorker(next); makeLocalWorker(next)
+            worker?.kick(); localWorker?.kick(); refreshDraft()
             await refreshHistory()
         } catch {
             warning = error.localizedDescription; audioStatus = "录音未开始"

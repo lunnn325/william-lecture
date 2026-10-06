@@ -99,6 +99,9 @@ struct LessonDetailView: View {
                     if document == nil {
                         Button("整理记录") { Task { await controller.processing.enqueue(session); await load() } }.disabled(controller.active)
                     }
+                    if let failure = controller.processing.enqueueFailures[session.id] {
+                        Text("整理记录未保存：\(failure)").font(.footnote).foregroundStyle(Color.williamWarning)
+                    }
                     if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(Color.williamWarning) }
                 }.frame(maxWidth: 720).padding(24).frame(maxWidth: .infinity)
             }.background(Color(uiColor: .systemBackground))

@@ -1,6 +1,6 @@
 # William Lecture 技术决定
 
-当前版本为 1.0.0；保留 0.0.8 的核心和 0.0.7 实际音频时间轴。下文保留历史背景。
+当前版本为 1.1.0 / build 10；保留 0.0.8 的核心和 0.0.7 实际音频时间轴。下文保留历史背景。
 
 ## V1：阅读与日常操作
 
@@ -69,7 +69,7 @@ JSONL 每次记录同步写入，保留毫秒时间，读时跳过崩溃末尾�
 本地 Windows 无 Apple SDK；实际编译和 Core XCTest 由 GitHub macOS runner 执行。固定 Xcode/XcodeGen 版本，生成项目后打包未签名真机 IPA，Sideloadly 本地个人签名，不上传 Apple ID/证书。CI 成功不能证明麦克风、Speech 模型、锁屏、长时功耗、Sideloadly 续签已经可用；这些需要真机验证表。
 
 来源：[Apple SpeechAnalyzer](https://developer.apple.com/documentation/speech/speechanalyzer)、[SpeechTranscriber](https://developer.apple.com/documentation/speech/speechtranscriber)、[WWDC25 长音频方案](https://developer.apple.com/videos/play/wwdc2025/277/)、[OpenAI streaming](https://developers.openai.com/api/docs/guides/streaming-responses)、[Sideloadly](https://sideloadly.io/)。
-# 1.1 补充（1.1.0 / build 10）
+## 1.1 补充（1.1.0 / build 10）
 
 本轮不使用 Impeccable；录音编码、采集帧时间轴、Sentence Buffer 定稿条件与翻译 revision 校验保持现有实现。阅读层独立保存用户选择，避免跟随更新将标记目标改成最新句。主字幕隐藏译文来源，采用 22pt 常规中文、17pt 次级英文和纯图标控制，支持动态字号及深色模式。
 

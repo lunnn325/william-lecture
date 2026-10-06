@@ -6,6 +6,7 @@ import WLCore
 /// A separate durable queue: post-class work can never own the microphone lifecycle.
 @MainActor final class LessonProcessingCoordinator: ObservableObject {
     @Published private(set) var change = 0
+    @Published private(set) var enqueueFailures: [UUID: String] = [:]
     private let store: SessionStore
     private let api = LessonAPI()
     private var task: Task<Void, Never>?
@@ -44,8 +45,12 @@ import WLCore
             var content = try await store.content(session.id) ?? LessonContent(sessionID: session.id, segments: sources)
             if content.fingerprint != LessonContent.fingerprint(sources) { content = LessonContent(sessionID: session.id, segments: sources) }
             if content.state != .completed || retry { content.state = .pending; content.error = nil; _ = try await store.saveContent(content) }
+            enqueueFailures.removeValue(forKey: session.id)
             change += 1; wake()
-        } catch { /* Storage failures remain visible in the controller and diagnostics. */ }
+        } catch {
+            enqueueFailures[session.id] = DiagnosticRedaction.redact(error.localizedDescription)
+            change += 1
+        }
     }
     func wake() {
         guard !recording, online, foreground || lease != .invalid else { return }
