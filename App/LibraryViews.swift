@@ -74,7 +74,7 @@ struct LessonDetailView: View {
                 playback.recordingActive = { controller.active }
                 await load()
                 do { let offsets = try await controller.store.audioOffsets(session.id); await playback.prepare(session: session, folder: controller.store.folder(session.id), offsets: offsets) }
-                catch { error = error.localizedDescription }
+                catch { self.error = error.localizedDescription }
                 while !Task.isCancelled && !controller.active && segments.contains(where: { $0.status == .pending && $0.error == nil }) {
                     do { try await Task.sleep(for: .seconds(4)) } catch { return }; await load()
                 }
@@ -235,7 +235,7 @@ struct ExportView: View {
                 if includeDiagnostics { result.append(diagnostic) }
                 if includeAudio { result.append(try await controller.exportAudio(session)) }
                 try Task.checkCancellation(); files = result
-            } catch is CancellationError { error = "导出已取消，原始记录保留。" }
+            } catch is CancellationError { self.error = "导出已取消，原始记录保留。" }
             catch { self.error = error.localizedDescription }
         }
     }
