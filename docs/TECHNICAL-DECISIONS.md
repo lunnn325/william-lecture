@@ -69,3 +69,19 @@ JSONL 每次记录同步写入，保留毫秒时间，读时跳过崩溃末尾�
 本地 Windows 无 Apple SDK；实际编译和 Core XCTest 由 GitHub macOS runner 执行。固定 Xcode/XcodeGen 版本，生成项目后打包未签名真机 IPA，Sideloadly 本地个人签名，不上传 Apple ID/证书。CI 成功不能证明麦克风、Speech 模型、锁屏、长时功耗、Sideloadly 续签已经可用；这些需要真机验证表。
 
 来源：[Apple SpeechAnalyzer](https://developer.apple.com/documentation/speech/speechanalyzer)、[SpeechTranscriber](https://developer.apple.com/documentation/speech/speechtranscriber)、[WWDC25 长音频方案](https://developer.apple.com/videos/play/wwdc2025/277/)、[OpenAI streaming](https://developers.openai.com/api/docs/guides/streaming-responses)、[Sideloadly](https://sideloadly.io/)。
+# 1.1 补充（1.1.0 / build 10）
+
+本轮不使用 Impeccable；录音编码、采集帧时间轴、Sentence Buffer 定稿条件与翻译 revision 校验保持现有实现。阅读层独立保存用户选择，避免跟随更新将标记目标改成最新句。主字幕隐藏译文来源，采用 22pt 常规中文、17pt 次级英文和纯图标控制，支持动态字号及深色模式。
+
+麦克风前接入 Speech 输入；先写音频，再等待旧 AI 任务清理。串行桥缓存最多 10 秒/8MB 的原始 PCM，接入时先提交缓存再提交新包。实时积压的丢弃范围按音频轴记录，结束时排空转换队列再记录最后缺口。补转写独立读取已关闭 CAF，仅补未覆盖范围，拒绝重叠段，不修改实时 cursor。Speech 预热仅使用已安装资源；下载在设置触发。[Apple SpeechAnalyzer](https://developer.apple.com/documentation/speech/speechanalyzer)
+
+实时 Responses API 使用 Luna Fast/none，附课程小词库及最近约 30 秒的英文上下文。课后队列独立于麦克风，录课期间暂停，结束后从持久化断点继续；后台有限执行时间到期取消，前台或重启恢复。[Fast 服务](https://developers.openai.com/api/docs/guides/fast-mode)、[Apple 后台限制](https://developer.apple.com/documentation/uikit/extending-your-app-s-background-execution-time)
+
+课后按约两分钟、最多 80 个原段修订，提供前后 30 秒上下文。保留原始英文/时间/ID，只另存经 source revision 和英文快照校验的英中修订；数字与否定变动拒绝整批结果，不猜改。随后 Sol/high 生成一次严格结构化结果，摘要和原生导图共用节点及原段引用。界面与导出优先匹配修订，再选择现有 GPT/完整本机译文；原始导出保留。
+
+内容快照使用稳定原文指纹，原子写盘并拒绝晚到旧快照。补转写若部分成功后失败，会重建有效指纹并保存明确失败状态，避免永久处理中。新内容文件为可选独立记录；旧课堂不自动发云端，手动整理才入队。课后缺少 Key、模型权限、网络或有效 Speech 资源时保存原因和断点，保留原音频。
+
+真实用量从响应取得，响应 ID 去重；用量缺失明确显示，预算继续保留本次最大额度。请求前用官方 `/v1/responses/input_tokens` 计算同一结构输入，预留最大输出，每次重试单独预留；每节课后总额不超过 250k，实时另计。[官方计数接口](https://developers.openai.com/api/docs/guides/token-counting)
+
+词库：ECON1111 外部性/信息不对称；FINN2003 支付/CBDC/DeFi（现有作业材料范围）；FINN3001 Python/NumPy/Pandas/财务建模。FINN2004 当前课件尚未核验，仅提供通用国际金融术语，不推断课堂内容。Key 复用设备 Keychain，日志和仓库不保存 Key。
+

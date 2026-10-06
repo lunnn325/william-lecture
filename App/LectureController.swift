@@ -204,9 +204,6 @@ import WLAppleAudio
         timer?.cancel(); timer = nil
         session?.state = .stopped // Reject late interruption events while draining Speech.
         await finishSpeech(); flushBuffer(); invalidateDraft(); await persistence?.value
-        if let id = session?.id, (session?.recordingSeconds ?? 0) > max(0, finalCursor.end) + 0.1 {
-            try? await store.log(Diagnostic("speech_unfinalized_tail", fields: ["range_start": "\(max(0, finalCursor.end))", "range_end": "\(session?.recordingSeconds ?? 0)", "replay": "pending"]), session: id)
-        }
         if var ended = session {
             ended.state = .stopped; ended.stoppedAt = stoppedAt
             ended.duration = ended.usesRecordingTimeline ? ended.recordingSeconds : stoppedAt.timeIntervalSince(ended.startedAt)
@@ -273,6 +270,12 @@ import WLAppleAudio
         // Do not await a model download that might outlive cancellation. Prepared analyzers are drained.
         recorder?.onPacket = nil
         await speech?.finish(); speech?.onEvent = nil; speech = nil; speechPreparation = nil; speechStatus = "转写已停止"
+        // Pause and restart have tails too. A later final result must not conceal
+        // missing speech immediately before a pause or interrupted analyzer.
+        let audioEnd = await recorder?.recordedDuration() ?? session?.recordingSeconds ?? 0
+        if audioEnd > max(0, finalCursor.end) + 0.1 {
+            log("speech_unfinalized_tail", fields: ["range_start": "\(max(0, finalCursor.end))", "range_end": "\(audioEnd)", "replay": "pending"])
+        }
     }
     private func handleSpeech(_ event: SpeechService.Event) {
         guard let session else { return }
