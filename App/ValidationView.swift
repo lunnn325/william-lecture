@@ -11,6 +11,7 @@ struct ValidationView: View {
                 Section("V0 · 技术验证") {
                     TextField("课程名称", text: $controller.course).disabled(controller.active)
                     Text(SessionStore.timestamp(controller.elapsed)).font(.system(.title, design: .monospaced))
+                    Text("录音时长 · 暂停不计时").font(.caption).foregroundStyle(.secondary)
                     HStack {
                         Button("开始") { Task { await controller.start() } }.disabled(controller.active || controller.busy)
                         Spacer()
@@ -134,6 +135,9 @@ private struct SessionView: View {
         List {
             Section("本地录音") {
                 Text("\(session.audioFiles.count) 个独立音频片段 · \(SessionStore.timestamp(session.duration))")
+                if session.recordedDuration != nil {
+                    Text("实际录音 \(SessionStore.timestamp(session.recordingSeconds)) · 上方时间轴保留暂停空档").font(.caption)
+                }
                 if !session.audioFiles.isEmpty {
                     Picker("片段", selection: Binding(get: { audioIndex }, set: { index in
                         player?.stop(); player = nil; playing = false; audioIndex = index

@@ -17,6 +17,58 @@ private actor StressTranslator {
 }
 
 final class HardeningTests: XCTestCase {
+    func testRecordingDisplayFreezesAcrossPauseAndResumesWithoutTimelineJump() {
+        let origin = Date(timeIntervalSince1970: 1000)
+        var session = LectureSession(course: "Pause clock", now: origin)
+        session.updateRecordingDuration(10.25)
+        session.state = .paused
+        for second in 11...300 {
+            session.duration = session.timelineOffset(now: origin.addingTimeInterval(Double(second)))
+            XCTAssertEqual(session.recordingSeconds, 10.25, "A timeline tick must never advance captured recording time")
+        }
+        session.state = .recording
+        session.updateRecordingDuration(11.25)
+        XCTAssertEqual(session.recordingSeconds, 11.25)
+        XCTAssertEqual(session.timelineOffset(now: origin.addingTimeInterval(301)), 301)
+        session.state = .paused; session.duration = 330
+        session.updateRecordingDuration(10) // A late queued meter must not move the display backwards.
+        session.updateRecordingDuration(.infinity)
+        XCTAssertEqual(session.recordingSeconds, 11.25)
+        session.state = .stopped
+        XCTAssertEqual(session.recordingSeconds, 11.25)
+        XCTAssertEqual(session.timelineOffset(now: origin.addingTimeInterval(9999)), 330)
+        let next = LectureSession(course: "Next", now: origin.addingTimeInterval(9999))
+        XCTAssertEqual(next.recordingSeconds, 0)
+    }
+
+    func testCapturedDurationPersistsSeparatelyAndOldMetadataRemainsReadable() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(root: root)
+        var session = LectureSession(course: "Two clocks")
+        session.duration = 130; session.updateRecordingDuration(70); session.state = .stopped
+        try await store.save(session)
+        let saved = try await store.sessions()
+        XCTAssertEqual(saved.first?.recordingSeconds, 70); XCTAssertEqual(saved.first?.duration, 130)
+        let url = store.folder(session.id).appendingPathComponent("session.json")
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        object.removeValue(forKey: "recordedDuration")
+        try JSONSerialization.data(withJSONObject: object).write(to: url, options: .atomic)
+        let old = try await store.sessions()
+        XCTAssertNil(old.first?.recordedDuration); XCTAssertEqual(old.first?.duration, 130)
+    }
+
+    func testRecoveryRestoresCapturedDurationWithoutCountingPauseGap() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(root: root)
+        var session = LectureSession(course: "Interrupted clock", now: Date(timeIntervalSince1970: 1000))
+        session.updateRecordingDuration(25); try await store.save(session)
+        try await store.log(Diagnostic("health", offset: 100, fields: ["captured_seconds": "50"]), session: session.id)
+        try await store.log(Diagnostic("pause", offset: 150, fields: ["gap": "user pause"]), session: session.id)
+        try await store.recover()
+        let recovered = try await store.sessions()
+        XCTAssertEqual(recovered.first?.recordingSeconds, 50); XCTAssertEqual(recovered.first?.duration, 150)
+    }
+
     private func directory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true); return url

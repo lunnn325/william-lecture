@@ -160,6 +160,7 @@ public actor SessionStore {
             for name in ["audio-index.jsonl", "diagnostics.jsonl"] {
                 try JSONLines.scan(Diagnostic.self, at: folder(session.id).appendingPathComponent(name)) {
                     if let offset = $0.offset, offset.isFinite { lastOffset = max(lastOffset, offset) }
+                    if let captured = $0.fields["captured_seconds"].flatMap(Double.init) { session.updateRecordingDuration(captured) }
                 }
             }
             var buffer = SentenceBuffer()

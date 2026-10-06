@@ -104,6 +104,9 @@ final class AudioRecorder: @unchecked Sendable {
         }
     }
     func pause() async { await withCheckedContinuation { continuation in queue.async { self.pauseOnQueue { continuation.resume() } } } }
+    func recordedDuration() async -> Double {
+        await withCheckedContinuation { continuation in queue.async { continuation.resume(returning: self.capturedSeconds) } }
+    }
     func stop() async {
         await withCheckedContinuation { continuation in queue.async {
             self.pauseOnQueue {

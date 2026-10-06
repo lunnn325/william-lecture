@@ -11,10 +11,21 @@ public struct LectureSession: Codable, Identifiable, Sendable {
     public var stoppedAt: Date?
     public var state: SessionState
     public var duration: Double
+    /// Captured PCM seconds, excluding pauses. Nil on journals written before 0.0.6.
+    public var recordedDuration: Double?
+    public var recordingSeconds: Double { max(0, recordedDuration ?? 0) }
     public var audioFiles: [String]
     public init(course: String, now: Date = Date()) {
         id = UUID(); self.course = course; startedAt = now
-        state = .recording; duration = 0; audioFiles = []
+        state = .recording; duration = 0; recordedDuration = 0; audioFiles = []
+    }
+    public mutating func updateRecordingDuration(_ seconds: Double) {
+        guard seconds.isFinite, seconds >= 0 else { return }
+        recordedDuration = max(recordingSeconds, seconds)
+    }
+    /// Speech, diagnostics and M4A use the session axis, retaining pause gaps.
+    public func timelineOffset(now: Date = Date()) -> Double {
+        [.stopped, .recovered].contains(state) ? duration : max(0, now.timeIntervalSince(startedAt))
     }
 }
 

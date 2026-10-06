@@ -17,7 +17,8 @@ import WLAppleAudio
     @Published var speechError = ""
     @Published var translationStatus = "模拟模式"
     @Published var warning = ""
-    @Published var elapsed = 0.0
+    var elapsed: Double { session?.recordingSeconds ?? 0 }
+    private var timelineOffset: Double { session?.timelineOffset() ?? 0 }
     @Published var peak = 0.0
     @Published var inputRMSDBFS = -120.0
     @Published var inputPeakDBFS = -120.0
@@ -87,7 +88,7 @@ import WLAppleAudio
             try await store.save(next)
             let folder = store.folder(next.id)
             try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: folder.path)
-            session = next; visible = []; buffer = SentenceBuffer(); elapsed = 0; currentChinese = ""; volatileEnglish = ""; warning = ""; newestDisplayEnd = -1; interrupted = false; wantsRecovery = false
+            session = next; visible = []; buffer = SentenceBuffer(); currentChinese = ""; volatileEnglish = ""; warning = ""; newestDisplayEnd = -1; interrupted = false; wantsRecovery = false
             finalCursor = FinalSpeechCursor(); lastSpeechResultAt = nil
             let recorder = AudioRecorder(); self.recorder = recorder
             recorder.onEvent = { [weak self] event in Task { @MainActor in
@@ -107,6 +108,7 @@ import WLAppleAudio
         guard !busy, active else { return }; busy = true; defer { busy = false }
         if recording {
             await recorder?.pause(); session?.state = .paused
+            await snapshotRecordingDuration()
             await finishSpeech(); flushBuffer(); await persistence?.value
             audioStatus = "已暂停；音频已保存"
             log("pause", gap: "用户课间暂停，未采集此时段音频")
@@ -123,12 +125,12 @@ import WLAppleAudio
         // Stop/close the audio first; never wait for translation to stop recording.
         await recorder?.stop(); recorder?.onPacket = nil
         let stoppedAt = Date()
+        await snapshotRecordingDuration()
         timer?.cancel(); timer = nil
         session?.state = .stopped // Reject late interruption events while draining Speech.
         await finishSpeech(); flushBuffer(); await persistence?.value
         if var ended = session {
             ended.state = .stopped; ended.stoppedAt = stoppedAt; ended.duration = stoppedAt.timeIntervalSince(ended.startedAt)
-            elapsed = ended.duration
             session = ended
             do { try await store.save(ended); try await store.log(Diagnostic("session_stop", offset: ended.duration), session: ended.id) }
             catch { warning = "保存记录失败：\(error.localizedDescription)" }
@@ -142,8 +144,7 @@ import WLAppleAudio
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled, let self, let session = self.session else { return }
-                self.elapsed = Date().timeIntervalSince(session.startedAt)
-                self.session?.duration = self.elapsed
+                self.session?.duration = session.timelineOffset()
             }
         }
     }
@@ -163,7 +164,7 @@ import WLAppleAudio
             do {
                 try await service.start(localeIdentifier: self.locale)
                 guard !Task.isCancelled, self.session?.id == id else { await service.finish(); return }
-                let ready = self.elapsed; self.speechReadyAt = ready
+                let ready = self.timelineOffset; self.speechReadyAt = ready
                 self.log("speech_ready", fields: ["engine": self.speechStatus, "locale": self.locale])
                 if ready > 1 { self.log("speech_preparation_gap", gap: "模型准备期间只录音，未实时转写；音频保留可补处理") }
             } catch is CancellationError { }
@@ -273,7 +274,8 @@ import WLAppleAudio
         case .configuration(let fields): log("audio_input_configuration", fields: fields)
         case .metadataWarning(let message): warning = message; log("audio_index_error", fields: ["error": message])
         case .meter(let offset, let levels, let memory, let capturedSeconds, let size):
-            self.peak = levels.peak; inputRMSDBFS = levels.rmsDBFS; inputPeakDBFS = levels.peakDBFS; elapsed = offset
+            self.peak = levels.peak; inputRMSDBFS = levels.rmsDBFS; inputPeakDBFS = levels.peakDBFS
+            self.session?.updateRecordingDuration(capturedSeconds)
             log("health", offset: offset, fields: ["resident_bytes": "\(memory)", "audio_bytes": "\(size)", "captured_seconds": "\(capturedSeconds)",
                 "peak": "\(levels.peak)", "input_peak_dbfs": "\(levels.peakDBFS)", "input_rms_dbfs": "\(levels.rmsDBFS)", "clipped_fraction": "\(levels.clippedFraction)",
                 "speech_result_age_seconds": "\(Date().timeIntervalSince(lastSpeechResultAt ?? session.startedAt))"])
@@ -303,6 +305,7 @@ import WLAppleAudio
             while busy && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
             guard !Task.isCancelled, active, session?.id == id else { interruptionTask = nil; return }
             busy = true
+            await snapshotRecordingDuration()
             await finishSpeech(); flushBuffer(); await persistence?.value
             if let snapshot = self.session { try? await store.save(snapshot) }
             busy = false; interruptionTask = nil
@@ -313,10 +316,15 @@ import WLAppleAudio
         let previous = persistence
         persistence = Task { await previous?.value; do { try await action() } catch { warning = "文字/诊断写盘失败：\(error.localizedDescription)；请检查空间" } }
     }
+    private func snapshotRecordingDuration() async {
+        guard let recorder else { return }
+        let seconds = await recorder.recordedDuration()
+        session?.updateRecordingDuration(seconds)
+    }
     private func log(_ event: String, offset: Double? = nil, fields: [String: String] = [:], gap: String? = nil) {
         guard let id = session?.id else { return }
         var fields = fields; if let gap { fields["gap"] = gap }
-        let item = Diagnostic(event, offset: offset ?? elapsed, fields: fields)
+        let item = Diagnostic(event, offset: offset ?? timelineOffset, fields: fields)
         enqueue { try await self.store.log(item, session: id) }
     }
     func refreshHistory() async { do { history = try await store.sessions() } catch { warning = error.localizedDescription } }
