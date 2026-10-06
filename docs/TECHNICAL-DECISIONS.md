@@ -73,7 +73,7 @@ JSONL 每次记录同步写入，保留毫秒时间，读时跳过崩溃末尾�
 
 2026-10-07 补充英文快显：实时 SpeechTranscriber 开启 `.volatileResults + .fastResults + .audioTimeRange`，预热配置一致；先订阅结果，再接入输入。课后文件补转写不启用 fastResults。Apple 快模式使用较小上下文，可能增加暂时识别错误，不能保证逐词速度与语音备忘录相同。[Apple fastResults](https://developer.apple.com/documentation/speech/speechtranscriber/reportingoption/fastresults)
 
-英文预览独立接收最新 partial，不等待本机/GPT 或 Sentence Buffer。无法安全拆分的范围重叠直接显示该假设全文，不拼接重复的 buffer、不按字符猜删词；预览不写入正式文字稿，也不改变冻结英文/revision 校验。新增 Speech 收到结果→可见英文预览、音频范围末尾→英文预览诊断，最多每秒记录一次。iPad 继续以 720pt 居中阅读区适配横竖屏；窄窗口控制自动缩小间距，导图高度随窗口调整，旋转保留选句与停止跟随的位置。
+英文预览独立接收最新 partial，不等待本机/GPT 或 Sentence Buffer。无法安全拆分的范围重叠直接显示该假设全文，不拼接重复的 buffer、不按字符猜删词；预览不写入正式文字稿，也不改变冻结英文/revision 校验。新增 Speech 收到结果→可见英文预览、音频范围末尾→英文预览诊断，最多每秒记录一次。iPad 实时字幕及详情全文使用可用宽度、两侧各 24pt 边距适配横竖屏；摘要和控制区保留宽度限制；窄窗口控制自动缩小间距，导图高度随窗口调整，旋转保留选句与停止跟随的位置。
 
 本轮不使用 Impeccable；录音编码、采集帧时间轴、Sentence Buffer 定稿条件与翻译 revision 校验保持现有实现。阅读层独立保存用户选择，避免跟随更新将标记目标改成最新句。主字幕隐藏译文来源，采用 22pt 常规中文、17pt 次级英文和纯图标控制，支持动态字号及深色模式。
 

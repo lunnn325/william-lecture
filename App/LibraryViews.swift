@@ -108,7 +108,8 @@ struct LessonDetailView: View {
                         Text("整理记录未保存：\(failure)").font(.footnote).foregroundStyle(Color.williamWarning)
                     }
                     if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(Color.williamWarning) }
-                }.frame(maxWidth: 720).padding(24).frame(maxWidth: .infinity)
+                }.frame(maxWidth: UIDevice.current.userInterfaceIdiom == .pad && tab == 0 ? .infinity : 720, alignment: .leading)
+                    .padding(24).frame(maxWidth: .infinity)
             }.background(Color(uiColor: .systemBackground))
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _, height in viewportHeight = height }
                 .onChange(of: jumpRequest) { _, _ in

@@ -111,7 +111,8 @@ struct WorkspaceView: View {
                         if let live { captionRow(live) }
                         Color.clear.frame(height: 8).id("caption-bottom")
                     }
-                    .frame(maxWidth: 720).padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 12)
+                    .frame(maxWidth: UIDevice.current.userInterfaceIdiom == .pad ? .infinity : 720, alignment: .leading)
+                    .padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 12)
                     .frame(maxWidth: .infinity)
                 }
                 .accessibilityIdentifier("caption-scroll")

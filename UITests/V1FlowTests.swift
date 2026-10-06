@@ -107,6 +107,7 @@ import UIKit
         app.buttons["pause-recording"].tap()
         XCTAssertTrue(app.staticTexts["录音中"].waitForExistence(timeout: 5))
         waitForLatestCaption(app)
+        assertTabletCaptionWidth(app)
         capture(app, "workspace-landscape")
         XCTAssertTrue(app.buttons["stop-recording"].isHittable)
         // A historical reader must not be re-anchored by the same resize task.
@@ -126,6 +127,7 @@ import UIKit
         XCTAssertTrue(app.buttons["follow-latest"].exists, "Rotation must preserve a suspended reader")
         app.buttons["follow-latest"].tap()
         waitForLatestCaption(app)
+        assertTabletCaptionWidth(app)
         capture(app, "workspace-portrait-return")
     }
     private func launch(active: Bool, extra: [String] = []) -> XCUIApplication {
@@ -147,6 +149,13 @@ import UIKit
                 && english.frame.minY > 0 && timestamp.frame.maxY < timer.frame.minY
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 10), .completed, "Following must show the complete latest bilingual row above fixed controls")
+    }
+    private func assertTabletCaptionWidth(_ app: XCUIApplication) {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
+        let row = app.descendants(matching: .any).matching(identifier: "caption-20000000-0000-0000-0000-000000000018").firstMatch
+        XCTAssertTrue(row.exists)
+        XCTAssertLessThanOrEqual(row.frame.minX - app.frame.minX, 32, "Tablet subtitles must reach the left reading margin")
+        XCTAssertLessThanOrEqual(app.frame.maxX - row.frame.maxX, 32, "Tablet subtitles must reach the right reading margin")
     }
     private func waitPreparedFiles(_ app: XCUIApplication) {
         XCTAssertTrue(app.buttons["分享 / 保存到文件"].waitForExistence(timeout: 40))
