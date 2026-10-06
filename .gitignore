@@ -15,4 +15,5 @@ dist/
 *.p12
 *.mobileprovision
 **/xcuserdata/
+.impeccable/review/
 

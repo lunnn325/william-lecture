@@ -13,10 +13,10 @@ import XCTest
     }
 
     private func assertReadyWithoutStorageError(_ app: XCUIApplication) {
-        let start = app.buttons["开始"]
+        let start = app.buttons["start-recording"]
         XCTAssertTrue(start.waitForExistence(timeout: 15))
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in start.isEnabled }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed)
-        XCTAssertFalse(app.staticTexts["system-warning"].exists)
+        XCTAssertFalse(app.buttons["system-warning"].exists)
     }
 }

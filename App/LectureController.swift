@@ -6,10 +6,14 @@ import WLCore
 import WLAppleAudio
 
 @MainActor final class LectureController: ObservableObject {
-    @Published var course = "课堂测试"
+    @Published var course = UserDefaults.standard.string(forKey: "selectedCourse") ?? "未分类课程"
     @Published var session: LectureSession?
     @Published var history: [LectureSession] = []
     @Published var visible: [TranscriptSegment] = []
+    @Published var latestCaptionUpdate: TranscriptSegment?
+    @Published var sessionNotes: [LectureNote] = []
+    @Published var noteBusy = false
+    @Published var savedCourses = UserDefaults.standard.stringArray(forKey: "savedCourses") ?? []
     @Published var volatileEnglish = ""
     @Published var currentChinese = ""
     @Published var audioStatus = "未录音"
@@ -25,7 +29,7 @@ import WLAppleAudio
     @Published var inputRMSDBFS = -120.0
     @Published var inputPeakDBFS = -120.0
     @Published var busy = false
-    @Published var mode = TranslationMode(rawValue: UserDefaults.standard.string(forKey: "translationMode") ?? "mock") ?? .mock
+    @Published var mode = TranslationMode(rawValue: UserDefaults.standard.string(forKey: "translationMode") ?? "openAI") ?? .openAI
     @Published var model = UserDefaults.standard.string(forKey: "translationModel") ?? "gpt-4.1-mini"
     @Published var locale = UserDefaults.standard.string(forKey: "speechLocale") ?? "en-AU"
     let store: SessionStore
@@ -60,7 +64,12 @@ import WLAppleAudio
 
     init() {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        store = SessionStore(root: documents.appendingPathComponent("Sessions", isDirectory: true))
+        #if DEBUG
+        let directory = ProcessInfo.processInfo.arguments.contains("--wl-ui-fixture") ? "UIFixture" : "Sessions"
+        #else
+        let directory = "Sessions"
+        #endif
+        store = SessionStore(root: documents.appendingPathComponent(directory, isDirectory: true))
         busy = true
         Task {
             defer { busy = false }
@@ -68,6 +77,9 @@ import WLAppleAudio
                 try await store.prepare()
                 let issues = try await store.recover()
                 warning = issues.prefix(5).joined(separator: "\n")
+                #if DEBUG
+                if isUIFixture { try await installUIFixture() }
+                #endif
                 await refreshHistory()
             } catch { warning = error.localizedDescription }
         }
@@ -82,15 +94,20 @@ import WLAppleAudio
     }
     var active: Bool { session != nil && session?.state != .stopped && session?.state != .recovered }
     var recording: Bool { session?.state == .recording }
-    func saveSettings(key: String?) {
+    @discardableResult func saveSettings(key: String?) -> Bool {
+        guard !active else { warning = "请先结束录课，再更改翻译设置"; return false }
+        if let key { do { try Keychain.save(key.trimmingCharacters(in: .whitespacesAndNewlines)) } catch { warning = error.localizedDescription; return false } }
         UserDefaults.standard.set(mode.rawValue, forKey: "translationMode")
         UserDefaults.standard.set(model, forKey: "translationModel")
         UserDefaults.standard.set(locale, forKey: "speechLocale")
         UserDefaults.standard.set(localEnabled, forKey: "localTranslationEnabled")
-        if let key { do { try Keychain.save(key.trimmingCharacters(in: .whitespacesAndNewlines)) } catch { warning = error.localizedDescription } }
+        return true
     }
     func start() async {
         guard !busy, !active else { return }; busy = true; defer { busy = false }
+        #if DEBUG
+        if isUIFixture { await startUIFixture(); return }
+        #endif
         await worker?.waitForCancellation(); worker = nil
         await localWorker?.shutdown(); localWorker = nil
         interruptionTask?.cancel(); await interruptionTask?.value; interruptionTask = nil
@@ -98,10 +115,12 @@ import WLAppleAudio
         do {
             if let space = try await store.availableCapacityForRecording(), space < 500 * 1024 * 1024 { throw WLFailure.message("可用空间不足 500 MB；请清理后再录音") }
             let next = LectureSession(course: course.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未命名课程" : course)
+            selectCourse(next.course)
             try await store.save(next)
             let folder = store.folder(next.id)
             try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: folder.path)
             session = next; visible = []; buffer = SentenceBuffer(); currentChinese = ""; volatileEnglish = ""; warning = ""; newestDisplayEnd = -1; interrupted = false; wantsRecovery = false
+            latestCaptionUpdate = nil; sessionNotes = []
             finalCursor = FinalSpeechCursor(); lastSpeechResultAt = nil
             drafts = CaptionDraftCoordinator(); previewChinese = [:]; focusedCaptionID = nil
             renderedRows = []; displayedFinalIDs = []
@@ -121,6 +140,9 @@ import WLAppleAudio
     }
     func pauseOrResume() async {
         guard !busy, active else { return }; busy = true; defer { busy = false }
+        #if DEBUG
+        if isUIFixture { session?.state = recording ? .paused : .recording; if let session { try? await store.save(session) }; return }
+        #endif
         if recording {
             await recorder?.pause(); session?.state = .paused
             await snapshotRecordingDuration()
@@ -137,6 +159,9 @@ import WLAppleAudio
     }
     func stop() async {
         guard !busy, active else { return }; busy = true; defer { busy = false }
+        #if DEBUG
+        if isUIFixture { session?.state = .stopped; session?.stoppedAt = Date(); if let session { try? await store.save(session) }; await refreshHistory(); return }
+        #endif
         // Stop/close the audio first; never wait for translation to stop recording.
         await recorder?.stop(); recorder?.onPacket = nil
         let stoppedAt = Date()
@@ -292,6 +317,7 @@ import WLAppleAudio
         var segment = segment
         let prior = visible.first(where: { $0.id == segment.id })
         if let prior { segment = segment.mergingDisplay(prior) }
+        latestCaptionUpdate = segment
         if segment.finalChinese != nil || segment.validLocalChinese != nil { previewChinese.removeValue(forKey: segment.id) }
         if let index = visible.firstIndex(where: { $0.id == segment.id }) { visible[index] = segment }
         else { visible.append(segment); visible.sort { $0.start < $1.start }; if visible.count > 30 { visible.removeFirst(visible.count - 30) } }
@@ -309,6 +335,52 @@ import WLAppleAudio
         segment.finalChinese ?? segment.validLocalChinese ?? previewChinese[segment.id] ?? segment.displayChinese
     }
     var captionReferenceID: UUID? { focusedCaptionID ?? visible.last?.id }
+    var workspaceDraft: WorkspaceCaption? {
+        guard active else { return nil }
+        if let draft = drafts.current, !visible.contains(where: { $0.id == draft.id }) {
+            return WorkspaceCaption(id: draft.id, start: draft.start, english: draft.english, chinese: draft.chinese, provisional: true)
+        }
+        let english = [buffer.pendingText, volatileEnglish].filter { !$0.isEmpty }.joined(separator: " ")
+        guard !english.isEmpty, !visible.contains(where: { $0.id == buffer.pendingID }) else { return nil }
+        return WorkspaceCaption(id: buffer.pendingID, start: buffer.pendingStart ?? elapsed, english: english, chinese: nil, provisional: true)
+    }
+    var courseChoices: [String] { Array(Set(savedCourses + history.map(\.course) + [course])).sorted() }
+    func selectCourse(_ name: String) {
+        guard !active else { return }
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        if course != String(name.prefix(80)) {
+            session = nil; visible = []; currentChinese = ""; volatileEnglish = ""; sessionNotes = []; latestCaptionUpdate = nil
+        }
+        course = String(name.prefix(80))
+        if !savedCourses.contains(course) { savedCourses.append(course) }
+        UserDefaults.standard.set(course, forKey: "selectedCourse")
+        UserDefaults.standard.set(savedCourses, forKey: "savedCourses")
+    }
+    func latestWorkspaceRows() async -> [TranscriptSegment] {
+        guard let selected = session else { return [] }
+        do {
+            let records = try await store.segments(selected.id)
+            guard session?.id == selected.id else { return [] }
+            var feed = CaptionFeed(); feed.merge(Array(records.suffix(180))); feed.merge(visible)
+            return feed.rows
+        } catch { warning = error.localizedDescription; return visible }
+    }
+    func note(for id: UUID) -> LectureNote? { sessionNotes.first { $0.segmentID == id } }
+    func writeNote(_ note: LectureNote, session id: UUID) async -> Bool {
+        guard !noteBusy else { return false }; noteBusy = true; defer { noteBusy = false }
+        do {
+            var saved = note; saved.updatedAt = Date(); try await store.saveNote(saved, session: id)
+            let notes = try await store.notes(id)
+            if session?.id == id { sessionNotes = notes }
+            return true
+        } catch { warning = "笔记保存失败：\(error.localizedDescription)"; return false }
+    }
+    func toggleMark(_ caption: WorkspaceCaption) async {
+        guard let id = session?.id else { return }
+        var note = note(for: caption.id) ?? LectureNote(segmentID: caption.id, offset: caption.start, english: caption.english, marked: false)
+        note.marked.toggle(); _ = await writeNote(note, session: id)
+    }
     func setPrimaryCaptionVisible(_ value: Bool) {
         primaryCaptionVisible = value
         if value, let id = captionReferenceID { captionDidRender(id: id) }

@@ -13,5 +13,5 @@ app="build/Build/Products/Release-iphoneos/WilliamLecture.app"
 test -d "$app"
 mkdir -p dist/Payload
 ditto "$app" dist/Payload/WilliamLecture.app
-(cd dist && /usr/bin/zip -qry WilliamLecture-V0-unsigned.ipa Payload)
-echo "Unsigned IPA: dist/WilliamLecture-V0-unsigned.ipa (sign locally with Sideloadly)"
+(cd dist && /usr/bin/zip -qry WilliamLecture-V1-unsigned.ipa Payload)
+echo "Unsigned IPA: dist/WilliamLecture-V1-unsigned.ipa (sign locally with Sideloadly)"

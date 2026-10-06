@@ -29,13 +29,13 @@ jobs:
           echo "$PWD/.tools/xcodegen/bin" >> "$GITHUB_PATH"
       - name: Test core and build unsigned IPA
         run: bash scripts/build-ios.sh
-      - name: Verify fresh iOS install and relaunch
+      - name: Verify fresh install and V1 phone/tablet flows
         run: bash scripts/test-first-launch.sh
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: WilliamLecture-V0-unsigned-IPA
-          path: dist/WilliamLecture-V0-unsigned.ipa
+          name: WilliamLecture-V1-unsigned-IPA
+          path: dist/WilliamLecture-V1-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
       - name: Upload build diagnostics
@@ -47,7 +47,17 @@ jobs:
             build/swift-test.log
             build/xcodebuild.log
             build/Validation.xcresult
-            build/first-launch.log
+            build/FirstLaunch.log
             build/FirstLaunch.xcresult
+            build/TabletFlow.log
+            build/TabletFlow.xcresult
           if-no-files-found: ignore
           retention-days: 7
+      - name: Upload native interface captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V1-interface-screenshots
+          path: build/screenshots/
+          if-no-files-found: ignore
+          retention-days: 14
