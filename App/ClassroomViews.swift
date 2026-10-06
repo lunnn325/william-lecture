@@ -79,6 +79,7 @@ struct WorkspaceView: View {
     @State private var feed = CaptionFeed()
     @State private var nearBottom = true
     @State private var readerDragged = false
+    @State private var scrollIsIdle = true
     @State private var viewportSize = CGSize.zero
     @State private var settings = false
     @State private var status = false
@@ -140,14 +141,14 @@ struct WorkspaceView: View {
                             proxy.scrollTo("caption-bottom", anchor: .bottom)
                         }
                         .onScrollGeometryChange(for: Bool.self) { geometry in
-                            geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height + geometry.contentInsets.bottom - 80
-                        } action: { _, value in nearBottom = value }
+                            geometry.visibleRect.maxY >= geometry.contentSize.height - 80
+                        } action: { _, value in nearBottom = value; resumeIfAtBottom(proxy) }
                         .onScrollPhaseChange { _, phase in
+                            scrollIsIdle = phase == .idle
                             if phase == .interacting { readerDragged = true; feed.suspend() }
-                            if phase == .idle && readerDragged {
-                                readerDragged = false
-                                if nearBottom && !feed.following { Task { await latest(proxy) } }
-                            }
+                            // Layout/geometry may arrive after the idle event. Keep the
+                            // drag intent until either callback observes the visible end.
+                            resumeIfAtBottom(proxy)
                         }
                         .overlay(alignment: .bottomTrailing) {
                             if !feed.following {
@@ -326,9 +327,9 @@ struct WorkspaceView: View {
         CaptionTextView(caption: caption, marked: controller.note(for: caption.id)?.marked == true)
             .id(caption.id)
             .background(selectedCaption?.id == caption.id ? Color.williamAccent.opacity(0.04) : Color.clear)
-            .onTapGesture(count: 2) { selectedCaption = caption; feed.suspend(); Task { await controller.toggleMark(caption) } }
-            .onTapGesture { selectedCaption = caption; feed.suspend() }
-            .onLongPressGesture(minimumDuration: 0.5) { selectedCaption = caption; feed.suspend(); editNote(caption) }
+            .onTapGesture(count: 2) { readerDragged = false; selectedCaption = caption; feed.suspend(); Task { await controller.toggleMark(caption) } }
+            .onTapGesture { readerDragged = false; selectedCaption = caption; feed.suspend() }
+            .onLongPressGesture(minimumDuration: 0.5) { readerDragged = false; selectedCaption = caption; feed.suspend(); editNote(caption) }
             .accessibilityAction(named: "标记此句") { Task { await controller.toggleMark(caption) } }
             .accessibilityAction(named: "写笔记") { editNote(caption) }
             .accessibilityAction(named: "复制英文") { UIPasteboard.general.string = caption.english }
@@ -344,11 +345,16 @@ struct WorkspaceView: View {
         guard feed.following else { return }
         Task { @MainActor in await Task.yield(); guard feed.following else { return }; proxy.scrollTo("caption-bottom", anchor: .bottom) }
     }
-    private func latest(_ proxy: ScrollViewProxy) async {
+    private func resumeIfAtBottom(_ proxy: ScrollViewProxy) {
+        guard readerDragged, scrollIsIdle, nearBottom, !feed.following else { return }
+        readerDragged = false
+        Task { await latest(proxy, automatic: true) }
+    }
+    private func latest(_ proxy: ScrollViewProxy, automatic: Bool = false) async {
         let id = controller.session?.id
         let rows = await controller.latestWorkspaceRows()
-        guard controller.session?.id == id else { return }
-        selectedCaption = nil; feed.resume(latest: rows); hasEarlier = (rows.first?.start ?? 0) > 0.1; follow(proxy)
+        guard controller.session?.id == id, !automatic || (scrollIsIdle && nearBottom && !readerDragged) else { return }
+        selectedCaption = nil; readerDragged = false; feed.resume(latest: rows); hasEarlier = (rows.first?.start ?? 0) > 0.1; follow(proxy)
     }
     private func earlier() async {
         guard !loadingEarlier, let id = controller.session?.id, let first = feed.rows.first else { return }
