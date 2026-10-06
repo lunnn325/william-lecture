@@ -86,8 +86,15 @@ import UIKit
         capture(app, "workspace-landscape")
         XCTAssertTrue(app.buttons["stop-recording"].isHittable)
         // A historical reader must not be re-anchored by the same resize task.
-        let scroll = app.scrollViews["caption-scroll"]
-        for _ in 0..<3 { scroll.swipeDown() }
+        // ScrollView's accessibility frame includes both fixed shelves. A default
+        // landscape swipe begins on the controls, so drag inside the reading area.
+        let top = app.buttons["翻译状态与诊断"].frame.maxY + 32
+        let bottom = app.staticTexts["recording-time"].frame.minY - 24
+        XCTAssertGreaterThan(bottom - top, 20)
+        let origin = app.coordinate(withNormalizedOffset: .zero)
+        let start = origin.withOffset(CGVector(dx: app.frame.width / 2, dy: top))
+        let end = origin.withOffset(CGVector(dx: app.frame.width / 2, dy: bottom))
+        for _ in 0..<3 { start.press(forDuration: 0.1, thenDragTo: end) }
         XCTAssertTrue(app.buttons["follow-latest"].waitForExistence(timeout: 5))
         XCUIDevice.shared.orientation = .portrait
         let portrait = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in app.frame.height > app.frame.width }, object: nil)
