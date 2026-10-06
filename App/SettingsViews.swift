@@ -40,8 +40,10 @@ struct LectureSettingsView: View {
             }
             Section("OpenAI 最终翻译") {
                 Text(keySaved || Keychain.load() != nil ? "API Key 已保存在本机" : "尚未配置 API Key")
-                SecureField("输入新 Key，留空保留原 Key", text: $key).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(controller.active || controller.busy)
-                TextField("模型名称", text: $controller.model).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(controller.active || controller.busy)
+                SecureField("输入新 Key，留空保留原 Key", text: $key, prompt: Text("输入新 Key，留空保留原 Key").foregroundStyle(Color.williamSecondary))
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().disabled(controller.active || controller.busy)
+                TextField("模型名称", text: $controller.model, prompt: Text("模型名称").foregroundStyle(Color.williamSecondary))
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().disabled(controller.active || controller.busy)
                 Button("保存设置") { save() }.disabled(controller.active || controller.busy || preparing || controller.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 if Keychain.load() != nil { Button("移除 API Key", role: .destructive) { removeKey = true }.disabled(controller.active || controller.busy) }
                 if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(Color.williamWarning) }
@@ -104,7 +106,8 @@ struct CoursePickerView: View {
                 }
             }
             Section("添加课程") {
-                TextField("例如 ECON1111 · 微观经济学", text: $name).disabled(controller.active || controller.busy).accessibilityIdentifier("new-course-name")
+                TextField("例如 ECON1111 · 微观经济学", text: $name, prompt: Text("例如 ECON1111 · 微观经济学").foregroundStyle(Color.williamSecondary))
+                    .disabled(controller.active || controller.busy).accessibilityIdentifier("new-course-name")
                 Button("添加并选择") {
                     controller.selectCourse(name); name = ""; if inSheet { dismiss() }
                 }.disabled(controller.active || controller.busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

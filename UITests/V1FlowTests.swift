@@ -82,9 +82,19 @@ import UIKit
         XCTAssertTrue(app.staticTexts["已暂停"].waitForExistence(timeout: 5))
         app.buttons["pause-recording"].tap()
         XCTAssertTrue(app.staticTexts["录音中"].waitForExistence(timeout: 5))
+        waitForLatestCaption(app)
         capture(app, "workspace-landscape")
         XCTAssertTrue(app.buttons["stop-recording"].isHittable)
+        // A historical reader must not be re-anchored by the same resize task.
+        let scroll = app.scrollViews["caption-scroll"]
+        for _ in 0..<3 { scroll.swipeDown() }
+        XCTAssertTrue(app.buttons["follow-latest"].waitForExistence(timeout: 5))
         XCUIDevice.shared.orientation = .portrait
+        let portrait = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in app.frame.height > app.frame.width }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [portrait], timeout: 10), .completed)
+        XCTAssertTrue(app.buttons["follow-latest"].exists, "Rotation must preserve a suspended reader")
+        app.buttons["follow-latest"].tap()
+        waitForLatestCaption(app)
     }
     private func launch(active: Bool, extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication(); app.launchArguments = ["--wl-ui-fixture"] + (active ? ["--wl-fixture-active"] : []) + extra
@@ -93,6 +103,18 @@ import UIKit
     private func waitEnabled(_ element: XCUIElement) {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in element.isEnabled }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 20), .completed)
+    }
+    private func waitForLatestCaption(_ app: XCUIApplication) {
+        let suffix = "20000000-0000-0000-0000-000000000018"
+        let english = app.staticTexts["caption-english-\(suffix)"]
+        let chinese = app.staticTexts["caption-chinese-\(suffix)"]
+        let timestamp = app.staticTexts["caption-time-\(suffix)"]
+        let timer = app.staticTexts["recording-time"]
+        let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            english.isHittable && chinese.isHittable && timestamp.isHittable
+                && english.frame.minY > 0 && timestamp.frame.maxY < timer.frame.minY
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 10), .completed, "Following must show the complete latest bilingual row above fixed controls")
     }
     private func waitPreparedFiles(_ app: XCUIApplication) {
         XCTAssertTrue(app.buttons["分享 / 保存到文件"].waitForExistence(timeout: 40))

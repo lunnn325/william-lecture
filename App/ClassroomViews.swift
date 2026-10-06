@@ -46,13 +46,16 @@ struct CaptionTextView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text(caption.english).font(.subheadline).foregroundStyle(Color.williamSecondary).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("caption-english-\(caption.id.uuidString)")
                 if marked { Image(systemName: "bookmark.fill").font(.caption).foregroundStyle(.tint).accessibilityLabel("已标记") }
             }
             Text(caption.chinese ?? "中文稍后出现…")
                 .font(.title2.weight(.medium)).lineSpacing(5)
                 .foregroundStyle(caption.chinese == nil ? Color.williamSecondary : Color.primary)
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("caption-chinese-\(caption.id.uuidString)")
             Text(SessionStore.timestamp(caption.start)).font(.caption2).monospacedDigit().foregroundStyle(Color.williamSecondary)
+                .accessibilityIdentifier("caption-time-\(caption.id.uuidString)")
         }
         .padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
@@ -66,6 +69,7 @@ struct WorkspaceView: View {
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var feed = CaptionFeed()
     @State private var nearBottom = true
+    @State private var viewportSize = CGSize.zero
     @State private var settings = false
     @State private var status = false
     @State private var courses = false
@@ -101,6 +105,17 @@ struct WorkspaceView: View {
                 .accessibilityIdentifier("caption-scroll")
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
                 .defaultScrollAnchor(feed.following ? .bottom : .top, for: .sizeChanges)
+                .onScrollGeometryChange(for: CGSize.self) { $0.containerSize } action: { _, size in viewportSize = size }
+                .task(id: viewportSize) {
+                    let sessionID = controller.session?.id
+                    guard feed.following, viewportSize != .zero else { return }
+                    // Rotation changes the lazy stack's measured heights across several layouts.
+                    // Re-anchor after it settles; cancellation prevents a prior resize or reader
+                    // gesture from dragging the viewport back to the end.
+                    do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+                    guard !Task.isCancelled, feed.following, controller.session?.id == sessionID else { return }
+                    proxy.scrollTo("caption-bottom", anchor: .bottom)
+                }
                 .onScrollGeometryChange(for: Bool.self) { geometry in
                     geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height + geometry.contentInsets.bottom - 80
                 } action: { _, value in nearBottom = value }
