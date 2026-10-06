@@ -52,7 +52,7 @@ IPA 尚未签名，无法直接点开安装；Sideloadly 在电脑上完成个�
 - `diagnostics.jsonl`：音频、ASR、buffer、API、中断、内存、文件大小的时间点与指标。
 - `Exports/`：UTF-8 TXT/Markdown，标记 mock、待翻译和已知缺口。
 
-时间戳为保留毫秒精度的 Unix milliseconds，片段起止为 session 秒数；暂停期间保留时间轴空档。文件使用解锁后可访问的本机保护，允许锁屏写盘。通过 Windows iTunes 文件共享或 iPhone「文件 → 我的 iPhone → William Lecture」保存整个 Sessions 文件夹。V0 不自动删除音频；手动清理前先备份文字稿。
+时间戳为保留毫秒精度的 Unix milliseconds。0.0.7 新课堂的主计时、字幕起止、TXT/Markdown、回放和 M4A 共用实际采集的音频秒数，暂停不计时；真实采集日期另存，延迟统计不把暂停算成等待。旧课堂保留原时间轴及暂停空档并明确标识，不改写已有定位。文件使用解锁后可访问的本机保护，允许锁屏写盘。通过 Windows iTunes 文件共享或 iPhone「文件 → 我的 iPhone → William Lecture」保存整个 Sessions 文件夹。V0 不自动删除音频；手动清理前先备份文字稿。
 
 分析导出的诊断（Windows 已有 Node.js 即可）：
 

@@ -187,11 +187,14 @@ public final class Translator: @unchecked Sendable {
                     segment.completedAt = Date(); segment.status = config.mock ? .mock : .completed
                     try await store.append(segment, session: session.id)
                     streamingText.removeValue(forKey: segment.id); onUpdate?(segment)
-                    record(Diagnostic("translation_completed", offset: segment.end, fields: [
+                    var completionFields = [
                         "segment": segment.id.uuidString, "mock": "\(config.mock)",
-                        "request_ms": "\(Self.ms(segment.completedAt!.timeIntervalSince(submittedAt)))",
-                        "speech_end_to_complete_ms": "\(Self.ms(segment.completedAt!.timeIntervalSince(session.startedAt.addingTimeInterval(segment.end))))"
-                    ], at: segment.completedAt!))
+                        "request_ms": "\(Self.ms(segment.completedAt!.timeIntervalSince(submittedAt)))"
+                    ]
+                    if let endDate = segment.audioEndDate(in: session) {
+                        completionFields["speech_end_to_complete_ms"] = "\(Self.ms(segment.completedAt!.timeIntervalSince(endDate)))"
+                    }
+                    record(Diagnostic("translation_completed", offset: segment.end, fields: completionFields, at: segment.completedAt!))
                     return
                 } catch {
                     streamingText.removeValue(forKey: segment.id); streamingFirst.removeValue(forKey: segment.id)
@@ -234,11 +237,14 @@ public final class Translator: @unchecked Sendable {
         display.chinese = streamingText[segment.id]; display.firstTranslationAt = streamingFirst[segment.id]
         onUpdate?(display) // First Chinese reaches UI before any diagnostic disk write.
         if first, let at = streamingFirst[segment.id] {
-            record(Diagnostic("translation_first_result", offset: segment.end, fields: [
+            var firstFields = [
                 "segment": segment.id.uuidString, "mock": "\(config.mock)",
-                "request_ms": "\(Self.ms(at.timeIntervalSince(segment.submittedAt ?? at)))",
-                "speech_end_to_first_ms": "\(Self.ms(at.timeIntervalSince(session.startedAt.addingTimeInterval(segment.end))))"
-            ], at: at))
+                "request_ms": "\(Self.ms(at.timeIntervalSince(segment.submittedAt ?? at)))"
+            ]
+            if let endDate = segment.audioEndDate(in: session) {
+                firstFields["speech_end_to_first_ms"] = "\(Self.ms(at.timeIntervalSince(endDate)))"
+            }
+            record(Diagnostic("translation_first_result", offset: segment.end, fields: firstFields, at: at))
         }
     }
     private func record(_ item: Diagnostic) {

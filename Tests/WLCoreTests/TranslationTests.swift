@@ -244,6 +244,35 @@ final class TranslationTests: XCTestCase {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
         let old = try decoder.decode(TranscriptSegment.self, from: JSONSerialization.data(withJSONObject: object))
         XCTAssertNil(old.queuedAt); XCTAssertEqual(old.english, "Sentence 0.")
+        XCTAssertNil(old.audioEndedAt)
+    }
+
+    @MainActor func testTranslationLatencyAfterPauseUsesCaptureDateInsteadOfAudioPositionAsWallTime() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(root: root)
+        let session = LectureSession(course: "Paused latency", now: Date().addingTimeInterval(-1000))
+        try await store.save(session)
+        var segment = TranscriptSegment(start: 10, end: 12, english: "After a long pause.")
+        segment.audioEndedAt = Date().addingTimeInterval(-1)
+        try await store.append(segment, session: session.id)
+        let worker = TranslationWorker(store: store, config: config, session: session, operation: { _, delta in
+            await delta("恢复后。"); return "恢复后。"
+        })
+        let done = expectation(description: "Translated with a pause-free audio position")
+        worker.onUpdate = { if $0.status == .completed { done.fulfill() } }
+        worker.kick(); await fulfillment(of: [done], timeout: 3); await worker.waitForCancellation()
+        var diagnostics: [Diagnostic] = []
+        try JSONLines.scan(Diagnostic.self, at: store.folder(session.id).appendingPathComponent("diagnostics.jsonl")) { diagnostics.append($0) }
+        let first = try XCTUnwrap(diagnostics.first { $0.event == "translation_first_result" })
+        let completed = try XCTUnwrap(diagnostics.first { $0.event == "translation_completed" })
+        for (event, field) in [(first, "speech_end_to_first_ms"), (completed, "speech_end_to_complete_ms")] {
+            let milliseconds = try XCTUnwrap(event.fields[field].flatMap(Int.init))
+            XCTAssertGreaterThanOrEqual(milliseconds, 1000)
+            XCTAssertLessThan(milliseconds, 10000, "The 988-second gap since session start must not count as translation latency")
+            XCTAssertEqual(event.offset, 12)
+        }
+        let records = try await store.segments(session.id)
+        XCTAssertEqual(try XCTUnwrap(records.first).audioEndedAt!.timeIntervalSince1970, segment.audioEndedAt!.timeIntervalSince1970, accuracy: 0.001)
     }
 }
 

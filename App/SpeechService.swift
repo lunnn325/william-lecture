@@ -11,6 +11,7 @@ private final class SpeechInputBridge: @unchecked Sendable {
     private var continuation: AsyncStream<AnalyzerInput>.Continuation?
     private var target: AVAudioFormat?
     private var converter: StreamingPCMConverter?
+    private var captureDates = AudioCaptureDates()
     private let onDrop: @Sendable (Double) -> Void
     private let onFailure: @Sendable (String) -> Void
     init(onDrop: @escaping @Sendable (Double) -> Void, onFailure: @escaping @Sendable (String) -> Void) {
@@ -26,6 +27,7 @@ private final class SpeechInputBridge: @unchecked Sendable {
         queue.async {
             defer { self.slots.signal() }
             do {
+                self.lock.withLock { self.captureDates.observe(offset: packet.offset, capturedAt: packet.capturedAt) }
                 if self.converter?.outputFormat != format { self.converter = StreamingPCMConverter(outputFormat: format) }
                 guard let output = try self.converter?.convert(packet.buffer, capturedAt: packet.offset) else { return }
                 let result = sink.yield(AnalyzerInput(buffer: output.buffer, bufferStartTime: output.start))
@@ -37,6 +39,7 @@ private final class SpeechInputBridge: @unchecked Sendable {
             }
         }
     }
+    func captureDate(at offset: Double) -> Date? { lock.withLock { captureDates.date(at: offset) } }
     func finish() async {
         let sink = lock.withLock { let sink = continuation; continuation = nil; target = nil; return sink }
         await withCheckedContinuation { done in queue.async {
@@ -143,7 +146,8 @@ private final class SpeechInputBridge: @unchecked Sendable {
     private func emit(text: String, range: CMTimeRange, final: Bool) {
         let start = range.start.seconds, end = CMTimeRangeGetEnd(range).seconds
         guard start.isFinite, end.isFinite else { return }
-        onEvent?(.result(SpeechPiece(text: text, start: start, end: end), final))
+        onEvent?(.result(SpeechPiece(text: text, start: start, end: end,
+            audioStartedAt: bridge.captureDate(at: start), audioEndedAt: bridge.captureDate(at: end)), final))
     }
     func finish() async {
         await bridge.finish()

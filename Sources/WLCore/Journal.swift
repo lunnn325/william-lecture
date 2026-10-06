@@ -157,22 +157,26 @@ public actor SessionStore {
             let coverage = TranscriptCoverage(savedSegments)
             let lastEnd = savedSegments.map(\.end).max() ?? -1
             var lastOffset = max(session.duration, lastEnd)
+            var lastActivityAt = session.stoppedAt ?? session.startedAt
             for name in ["audio-index.jsonl", "diagnostics.jsonl"] {
                 try JSONLines.scan(Diagnostic.self, at: folder(session.id).appendingPathComponent(name)) {
                     if let offset = $0.offset, offset.isFinite { lastOffset = max(lastOffset, offset) }
                     if let captured = $0.fields["captured_seconds"].flatMap(Double.init) { session.updateRecordingDuration(captured) }
+                    lastActivityAt = max(lastActivityAt, $0.at)
                 }
             }
             var buffer = SentenceBuffer()
             try JSONLines.scan(SpeechPiece.self, at: folder(session.id).appendingPathComponent("speech-final.jsonl")) { piece in
                 if piece.end.isFinite { lastOffset = max(lastOffset, piece.end) }
+                lastActivityAt = max(lastActivityAt, piece.audioEndedAt ?? piece.receivedAt)
                 if !coverage.contains(piece), let segment = buffer.append(piece) {
                     try append(segment, session: session.id)
                 }
             }
             if let tail = buffer.flush() { try append(tail, session: session.id) }
-            session.duration = max(0, lastOffset)
-            session.stoppedAt = session.startedAt.addingTimeInterval(session.duration)
+            session.duration = max(max(0, lastOffset), session.usesRecordingTimeline ? session.recordingSeconds : 0)
+            if session.usesRecordingTimeline { session.updateRecordingDuration(session.duration) }
+            session.stoppedAt = session.usesRecordingTimeline ? lastActivityAt : session.startedAt.addingTimeInterval(session.duration)
             try save(session)
             try log(Diagnostic("process_recovery", fields: ["gap": "Recording ended when app/process terminated; audio files retained"]), session: session.id)
             } catch {
@@ -188,6 +192,7 @@ public actor SessionStore {
         let url = directory.appendingPathComponent("WilliamLecture-\(language.rawValue)-\(UUID().uuidString).\(markdown ? "md" : "txt")")
         let records = try segments(id)
         var lines = ["\(markdown ? "# " : "")\(session.course)", "Session: \(session.id)", "Date: \(session.startedAt.ISO8601Format())", ""]
+        lines.insert(session.usesRecordingTimeline ? "时间轴：实际录音，暂停不计时。" : "时间轴：旧版课堂，保留暂停空档。", at: 3)
         var gaps: [Diagnostic] = []
         try JSONLines.scan(Diagnostic.self, at: folder(id).appendingPathComponent("diagnostics.jsonl")) {
             if $0.fields["gap"] != nil { gaps.append($0) }

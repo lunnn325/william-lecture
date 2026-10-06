@@ -29,14 +29,15 @@ final class HardeningTests: XCTestCase {
         session.state = .recording
         session.updateRecordingDuration(11.25)
         XCTAssertEqual(session.recordingSeconds, 11.25)
-        XCTAssertEqual(session.timelineOffset(now: origin.addingTimeInterval(301)), 301)
-        session.state = .paused; session.duration = 330
+        XCTAssertEqual(session.timelineOffset(now: origin.addingTimeInterval(301)), 11.25)
+        session.state = .paused
         session.updateRecordingDuration(10) // A late queued meter must not move the display backwards.
         session.updateRecordingDuration(.infinity)
         XCTAssertEqual(session.recordingSeconds, 11.25)
         session.state = .stopped
         XCTAssertEqual(session.recordingSeconds, 11.25)
-        XCTAssertEqual(session.timelineOffset(now: origin.addingTimeInterval(9999)), 330)
+        XCTAssertEqual(session.timelineOffset(now: origin.addingTimeInterval(9999)), 11.25)
+        XCTAssertEqual(session.duration, 11.25)
         let next = LectureSession(course: "Next", now: origin.addingTimeInterval(9999))
         XCTAssertEqual(next.recordingSeconds, 0)
     }
@@ -45,6 +46,7 @@ final class HardeningTests: XCTestCase {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let store = SessionStore(root: root)
         var session = LectureSession(course: "Two clocks")
+        session.timeline = nil // 0.0.6 stored wall offsets separately from its capture counter.
         session.duration = 130; session.updateRecordingDuration(70); session.state = .stopped
         try await store.save(session)
         let saved = try await store.sessions()
@@ -52,21 +54,93 @@ final class HardeningTests: XCTestCase {
         let url = store.folder(session.id).appendingPathComponent("session.json")
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         object.removeValue(forKey: "recordedDuration")
+        object.removeValue(forKey: "timeline")
         try JSONSerialization.data(withJSONObject: object).write(to: url, options: .atomic)
         let old = try await store.sessions()
         XCTAssertNil(old.first?.recordedDuration); XCTAssertEqual(old.first?.duration, 130)
+        XCTAssertFalse(try XCTUnwrap(old.first).usesRecordingTimeline)
     }
 
     func testRecoveryRestoresCapturedDurationWithoutCountingPauseGap() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let store = SessionStore(root: root)
         var session = LectureSession(course: "Interrupted clock", now: Date(timeIntervalSince1970: 1000))
+        session.timeline = nil // Recovery must preserve old transcript/audio coordinates.
         session.updateRecordingDuration(25); try await store.save(session)
         try await store.log(Diagnostic("health", offset: 100, fields: ["captured_seconds": "50"]), session: session.id)
         try await store.log(Diagnostic("pause", offset: 150, fields: ["gap": "user pause"]), session: session.id)
         try await store.recover()
         let recovered = try await store.sessions()
         XCTAssertEqual(recovered.first?.recordingSeconds, 50); XCTAssertEqual(recovered.first?.duration, 150)
+    }
+
+    func testCaptureDatesExcludePauseFromPositionsButRetainPhysicalLatencyClock() throws {
+        let origin = Date(timeIntervalSince1970: 1000)
+        var dates = AudioCaptureDates()
+        for second in 0..<10800 { dates.observe(offset: Double(second), capturedAt: origin.addingTimeInterval(Double(second))) }
+        XCTAssertEqual(dates.anchorCount, 1, "Continuous audio must not retain a timestamp for every packet")
+        dates.observe(offset: 10800, capturedAt: origin.addingTimeInterval(10830))
+        XCTAssertEqual(dates.anchorCount, 2)
+        XCTAssertEqual(dates.date(at: 10799.5), origin.addingTimeInterval(10799.5))
+        XCTAssertEqual(dates.date(at: 10801.5), origin.addingTimeInterval(10831.5))
+        let firstResultAt = origin.addingTimeInterval(10832)
+        XCTAssertEqual(firstResultAt.timeIntervalSince(try XCTUnwrap(dates.date(at: 10801.5))), 0.5)
+        dates.observe(offset: 0, capturedAt: origin) // A stale callback cannot move the mapping backwards.
+        XCTAssertEqual(dates.anchorCount, 2)
+    }
+
+    func testUnifiedClockFinalSegmentsAndBothTextFormatsAfterThirtySecondPause() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let origin = Date(timeIntervalSince1970: 1000)
+        let store = SessionStore(root: root)
+        var session = LectureSession(course: "One timeline", now: origin)
+        var buffer = SentenceBuffer()
+        let before = SpeechPiece(text: "Before pause.", start: 8, end: 10, receivedAt: origin.addingTimeInterval(10.5), audioEndedAt: origin.addingTimeInterval(10))
+        let after = SpeechPiece(text: "After pause.", start: 10, end: 12, receivedAt: origin.addingTimeInterval(42.5), audioEndedAt: origin.addingTimeInterval(42))
+        session.updateRecordingDuration(10); session.state = .paused
+        XCTAssertEqual(session.timelineOffset(now: origin.addingTimeInterval(40)), 10)
+        session.state = .recording; session.updateRecordingDuration(12)
+        XCTAssertEqual(session.timelineOffset(now: origin.addingTimeInterval(42)), after.end)
+        session.state = .stopped; session.stoppedAt = origin.addingTimeInterval(42)
+        try await store.save(session)
+        for piece in [before, after] {
+            try await store.appendFinal(piece, session: session.id)
+            let segment = try XCTUnwrap(buffer.append(piece))
+            XCTAssertEqual(segment.audioEndDate(in: session), piece.audioEndedAt)
+            try await store.append(segment, session: session.id)
+        }
+        for markdown in [false, true] {
+            let url = try await store.export(session.id, language: .bilingual, markdown: markdown)
+            let text = try String(contentsOf: url, encoding: .utf8)
+            XCTAssertTrue(text.contains("[00:00:08 – 00:00:10]"))
+            XCTAssertTrue(text.contains("[00:00:10 – 00:00:12]"))
+            XCTAssertFalse(text.contains("[00:00:40")); XCTAssertTrue(text.contains("暂停不计时"))
+        }
+        let savedSessions = try await store.sessions(); let restored = try XCTUnwrap(savedSessions.first)
+        XCTAssertTrue(restored.usesRecordingTimeline); XCTAssertEqual(restored.duration, 12)
+        XCTAssertEqual(restored.stoppedAt, origin.addingTimeInterval(42))
+        var legacy = restored; legacy.timeline = nil
+        var oldSegment = TranscriptSegment(start: 40, end: 42, english: "Old classroom.")
+        XCTAssertEqual(oldSegment.audioEndDate(in: legacy), origin.addingTimeInterval(42))
+        XCTAssertNil(oldSegment.audioEndDate(in: restored), "Unknown capture dates must not produce fabricated pause-inflated latency")
+        oldSegment.audioEndedAt = origin.addingTimeInterval(42)
+        XCTAssertEqual(oldSegment.audioEndDate(in: restored), origin.addingTimeInterval(42))
+    }
+
+    func testNewTimelineRecoveryUsesClosedPCMCounterAndRetainsWallDate() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let origin = Date(timeIntervalSince1970: 1000)
+        let store = SessionStore(root: root)
+        var session = LectureSession(course: "Paused crash", now: origin)
+        session.updateRecordingDuration(10); session.state = .paused
+        try await store.save(session)
+        try JSONLines.append(Diagnostic("audio_chunk_close", offset: 12, fields: ["captured_seconds": "12"], at: origin.addingTimeInterval(42)),
+                             to: store.folder(session.id).appendingPathComponent("audio-index.jsonl"))
+        try await store.recover()
+        let sessions = try await store.sessions(); let recovered = try XCTUnwrap(sessions.first)
+        XCTAssertEqual(recovered.recordingSeconds, 12); XCTAssertEqual(recovered.duration, 12)
+        XCTAssertEqual(recovered.timelineOffset(now: origin.addingTimeInterval(9000)), 12)
+        XCTAssertEqual(recovered.stoppedAt, origin.addingTimeInterval(42))
     }
 
     private func directory() throws -> URL {
@@ -93,7 +167,8 @@ final class HardeningTests: XCTestCase {
     func testRecoveryDurationUsesRecordedOffsetsAndNotTimeOfRelaunch() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let store = SessionStore(root: root)
-        let session = LectureSession(course: "Yesterday", now: Date(timeIntervalSince1970: 1000))
+        var session = LectureSession(course: "Yesterday", now: Date(timeIntervalSince1970: 1000))
+        session.timeline = nil
         try await store.save(session)
         try await store.log(Diagnostic("health", offset: 123), session: session.id)
         try await store.recover()

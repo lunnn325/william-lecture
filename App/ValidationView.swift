@@ -11,7 +11,7 @@ struct ValidationView: View {
                 Section("V0 · 技术验证") {
                     TextField("课程名称", text: $controller.course).disabled(controller.active)
                     Text(SessionStore.timestamp(controller.elapsed)).font(.system(.title, design: .monospaced))
-                    Text("录音时长 · 暂停不计时").font(.caption).foregroundStyle(.secondary)
+                    Text("录音时长 · 与字幕时间一致，暂停不计时").font(.caption).foregroundStyle(.secondary)
                     HStack {
                         Button("开始") { Task { await controller.start() } }.disabled(controller.active || controller.busy)
                         Spacer()
@@ -135,8 +135,12 @@ private struct SessionView: View {
         List {
             Section("本地录音") {
                 Text("\(session.audioFiles.count) 个独立音频片段 · \(SessionStore.timestamp(session.duration))")
-                if session.recordedDuration != nil {
+                if session.usesRecordingTimeline {
+                    Text("字幕和 M4A 使用实际录音时间，暂停不计时。").font(.caption)
+                } else if session.recordedDuration != nil {
                     Text("实际录音 \(SessionStore.timestamp(session.recordingSeconds)) · 上方时间轴保留暂停空档").font(.caption)
+                } else {
+                    Text("旧版课堂时间轴，保留暂停空档。").font(.caption)
                 }
                 if !session.audioFiles.isEmpty {
                     Picker("片段", selection: Binding(get: { audioIndex }, set: { index in
@@ -144,7 +148,7 @@ private struct SessionView: View {
                     })) { ForEach(Array(session.audioFiles.enumerated()), id: \.offset) { index, name in Text(name).tag(index) } }
                     Button(playing ? "暂停回放" : "播放（自动续播下一段）") { togglePlayback() }.disabled(controller.active)
                     ShareLink(item: controller.store.folder(session.id).appendingPathComponent(session.audioFiles[min(audioIndex, session.audioFiles.count - 1)])) { Text("导出此 CAF 片段") }.disabled(controller.active || controller.busy)
-                    Button("生成整堂 M4A（保留暂停空档）") { Task {
+                    Button(session.usesRecordingTimeline ? "生成整堂 M4A（暂停不计时）" : "生成整堂 M4A（保留暂停空档）") { Task {
                         exportingAudio = true; defer { exportingAudio = false }
                         do { m4aURL = try await controller.exportAudio(session) }
                         catch { self.error = error.localizedDescription }

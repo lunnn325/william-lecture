@@ -7,14 +7,15 @@ public struct AudioExportChunk: Sendable {
     public init(url: URL, start: Double?) { self.url = url; self.start = start }
 }
 
-/// Streams CAF into AAC M4A with bounded PCM memory. Known recording gaps become silence,
-/// preserving the session time axis. A bad chunk fails the export; originals remain untouched.
+/// Streams CAF into AAC M4A with bounded PCM memory. Legacy session offsets retain gaps;
+/// recorded-audio sessions join chunks on the same pause-free axis as their transcripts.
+/// A bad chunk fails the export; originals remain untouched.
 public enum AudioExporter {
-    public static func m4a(chunks: [AudioExportChunk], destination: URL) async throws -> URL {
-        let task = Task.detached(priority: .utility) { try encode(chunks: chunks, destination: destination) }
+    public static func m4a(chunks: [AudioExportChunk], destination: URL, preservingGaps: Bool = true) async throws -> URL {
+        let task = Task.detached(priority: .utility) { try encode(chunks: chunks, destination: destination, preservingGaps: preservingGaps) }
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
-    private static func encode(chunks: [AudioExportChunk], destination: URL) throws -> URL {
+    private static func encode(chunks: [AudioExportChunk], destination: URL, preservingGaps: Bool) throws -> URL {
         guard !chunks.isEmpty else { throw ConversionFailure("没有可导出的音频片段") }
         guard !FileManager.default.fileExists(atPath: destination.path) else { throw ConversionFailure("导出文件已存在") }
         let temporary = destination.deletingLastPathComponent().appendingPathComponent("partial-\(UUID().uuidString).m4a")
@@ -29,7 +30,7 @@ public enum AudioExporter {
             try Task.checkCancellation()
             let reader = try AVAudioFile(forReading: chunk.url, commonFormat: .pcmFormatFloat32, interleaved: false)
             guard reader.length > 0, reader.processingFormat.sampleRate > 0 else { throw ConversionFailure("音频片段为空或损坏：\(chunk.url.lastPathComponent)") }
-            if let start = chunk.start {
+            if preservingGaps, let start = chunk.start {
                 guard start.isFinite, start >= 0, start < 24 * 3600 else { throw ConversionFailure("音频时间轴不合法") }
                 let gap = Int64((start * 48_000).rounded()) - writtenFrames
                 guard gap >= -2400 else { throw ConversionFailure("音频片段时间范围重叠，无法可靠合并") }

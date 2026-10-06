@@ -7,6 +7,7 @@ import WLAppleAudio
 struct AudioPacket: @unchecked Sendable {
     let buffer: AVAudioPCMBuffer
     let offset: Double
+    let capturedAt: Date
 }
 
 /// Dedicated serial disk queue. Nothing on the microphone callback waits for Speech, GPT or UI.
@@ -58,7 +59,7 @@ final class AudioRecorder: @unchecked Sendable {
         observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: nil) { [weak self] note in
             guard let self, let type = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt else { return }
             if type == AVAudioSession.InterruptionType.began.rawValue {
-                self.queue.async { if self.recording { self.pauseOnQueue { self.onEvent?(.interrupted(Date().timeIntervalSince(self.origin), true)) } } }
+                self.queue.async { if self.recording { self.pauseOnQueue { self.onEvent?(.interrupted(self.capturedSeconds, true)) } } }
             } else {
                 let raw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
                 if AVAudioSession.InterruptionOptions(rawValue: raw).contains(.shouldResume) { self.onEvent?(.recoveryRequested) }
@@ -70,7 +71,7 @@ final class AudioRecorder: @unchecked Sendable {
                 let wasRecording = self.recording
                 self.pauseOnQueue {
                     self.engine = AVAudioEngine()
-                    if wasRecording { self.onEvent?(.interrupted(Date().timeIntervalSince(self.origin), false)); self.onEvent?(.recoveryRequested) }
+                    if wasRecording { self.onEvent?(.interrupted(self.capturedSeconds, false)); self.onEvent?(.recoveryRequested) }
                 }
             }
         })
@@ -79,7 +80,7 @@ final class AudioRecorder: @unchecked Sendable {
             self.queue.async {
                 if let changedEngine = note.object as? AVAudioEngine, changedEngine === self.engine,
                    self.recording && !self.engine.isRunning {
-                    self.pauseOnQueue { self.onEvent?(.interrupted(Date().timeIntervalSince(self.origin), false)); self.onEvent?(.recoveryRequested) }
+                    self.pauseOnQueue { self.onEvent?(.interrupted(self.capturedSeconds, false)); self.onEvent?(.recoveryRequested) }
                 }
             }
         })
@@ -110,7 +111,7 @@ final class AudioRecorder: @unchecked Sendable {
     func stop() async {
         await withCheckedContinuation { continuation in queue.async {
             self.pauseOnQueue {
-                self.onEvent?(.stopped(Date().timeIntervalSince(self.origin)))
+                self.onEvent?(.stopped(self.capturedSeconds))
                 try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
                 continuation.resume()
             }
@@ -130,7 +131,7 @@ final class AudioRecorder: @unchecked Sendable {
             "sample_rate": "\(format.sampleRate)", "channels": "\(format.channelCount)",
             "input_gain": "\(session.inputGain)", "input_gain_settable": "\(session.isInputGainSettable)",
             "pcm_format": format.description]))
-        let offset = Date().timeIntervalSince(origin)
+        let offset = capturedSeconds
         try openChunk(format: format, offset: offset)
         faultReported = false; recording = true
         generation = captureGate.open()
@@ -144,10 +145,13 @@ final class AudioRecorder: @unchecked Sendable {
             }
             guard let copy = Self.clone(buffer) else { self.slots.signal(); self.reportCaptureFailure("Cannot copy audio buffer", generation: captureGeneration); return }
             let start = time.isHostTimeValid ? AVAudioTime.seconds(forHostTime: time.hostTime) - self.originUptime : Date().timeIntervalSince(self.origin) - Double(copy.frameLength) / copy.format.sampleRate
-            let packet = AudioPacket(buffer: copy, offset: max(0, start))
+            let capturedAt = self.origin.addingTimeInterval(max(0, start))
             let accepted = self.captureGate.offer(generation: captureGeneration) { self.queue.async {
                 defer { self.slots.signal() }
                 guard self.generation == captureGeneration, self.file != nil else { return }
+                // Assign positions on the same serial queue that successfully writes PCM.
+                // Host time is retained only for real latency; pauses never advance this axis.
+                let packet = AudioPacket(buffer: copy, offset: self.capturedSeconds, capturedAt: capturedAt)
                 do {
                     if packet.offset - self.chunkStart >= 30 || self.inputFormat != copy.format { self.closeChunk(); try self.openChunk(format: copy.format, offset: packet.offset) }
                     if !self.chunkHasFrames {
@@ -162,7 +166,7 @@ final class AudioRecorder: @unchecked Sendable {
                     if packet.offset - self.lastMeter >= 1 {
                         self.lastMeter = packet.offset
                         let currentBytes = self.currentURL.flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? NSNumber }?.uint64Value ?? 0
-                        self.onEvent?(.meter(packet.offset, self.levels.snapshotAndReset(), Self.memoryBytes(), self.capturedSeconds, self.closedBytes + currentBytes))
+                        self.onEvent?(.meter(self.capturedSeconds, self.levels.snapshotAndReset(), Self.memoryBytes(), self.capturedSeconds, self.closedBytes + currentBytes))
                     }
                 } catch { self.fail("Audio write: \(error.localizedDescription)", offset: packet.offset) }
             } }
@@ -192,12 +196,19 @@ final class AudioRecorder: @unchecked Sendable {
     private func closeChunk() {
         file = nil
         if let currentURL {
+            if chunkHasFrames {
+                writeIndex(Diagnostic("audio_chunk_close", offset: capturedSeconds, fields: ["file": currentURL.lastPathComponent]))
+            }
             closedBytes += ((try? FileManager.default.attributesOfItem(atPath: currentURL.path)[.size]) as? NSNumber)?.uint64Value ?? 0
         }
         currentURL = nil
     }
     private func writeIndex(_ item: Diagnostic) {
         guard let directory else { return }
+        var item = item
+        item.fields["timeline"] = SessionTimeline.recordedAudio.rawValue
+        item.fields["captured_seconds"] = "\(capturedSeconds)"
+        item.fields["wall_offset"] = "\(item.at.timeIntervalSince(origin))"
         do { try JSONLines.append(item, to: directory.appendingPathComponent("audio-index.jsonl")) }
         catch { onEvent?(.metadataWarning("音频索引写盘失败：\(error.localizedDescription)；原始音频继续录制")) }
     }
@@ -213,7 +224,7 @@ final class AudioRecorder: @unchecked Sendable {
         // including callbacks which enqueued while the pause operation was starting.
         queue.async {
             self.closeChunk(); self.closing = false
-            self.onEvent?(.paused(Date().timeIntervalSince(self.origin)))
+            self.onEvent?(.paused(self.capturedSeconds))
             let waiters = self.pauseWaiters; self.pauseWaiters.removeAll()
             waiters.forEach { $0() }
         }
@@ -225,7 +236,7 @@ final class AudioRecorder: @unchecked Sendable {
     private func reportCaptureFailure(_ message: String, generation: Int) {
         captureGate.offer(generation: generation) { queue.async {
             guard self.generation == generation, self.recording else { return }
-            self.fail(message, offset: Date().timeIntervalSince(self.origin))
+            self.fail(message, offset: self.capturedSeconds)
         } }
     }
     private static func clone(_ source: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {

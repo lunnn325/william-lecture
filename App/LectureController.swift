@@ -130,7 +130,8 @@ import WLAppleAudio
         session?.state = .stopped // Reject late interruption events while draining Speech.
         await finishSpeech(); flushBuffer(); await persistence?.value
         if var ended = session {
-            ended.state = .stopped; ended.stoppedAt = stoppedAt; ended.duration = stoppedAt.timeIntervalSince(ended.startedAt)
+            ended.state = .stopped; ended.stoppedAt = stoppedAt
+            ended.duration = ended.usesRecordingTimeline ? ended.recordingSeconds : stoppedAt.timeIntervalSince(ended.startedAt)
             session = ended
             do { try await store.save(ended); try await store.log(Diagnostic("session_stop", offset: ended.duration), session: ended.id) }
             catch { warning = "保存记录失败：\(error.localizedDescription)" }
@@ -149,6 +150,7 @@ import WLAppleAudio
         }
     }
     private func startSpeech() {
+        let preparationStart = timelineOffset
         speechReadyAt = nil
         seenSpeechResult = false
         speechError = ""
@@ -166,7 +168,7 @@ import WLAppleAudio
                 guard !Task.isCancelled, self.session?.id == id else { await service.finish(); return }
                 let ready = self.timelineOffset; self.speechReadyAt = ready
                 self.log("speech_ready", fields: ["engine": self.speechStatus, "locale": self.locale])
-                if ready > 1 { self.log("speech_preparation_gap", gap: "模型准备期间只录音，未实时转写；音频保留可补处理") }
+                if ready - preparationStart > 1 { self.log("speech_preparation_gap", gap: "模型准备期间只录音，未实时转写；音频保留可补处理") }
             } catch is CancellationError { }
             catch {
                 guard self.speech === service, self.session?.id == id, !Task.isCancelled else { return }
@@ -193,13 +195,13 @@ import WLAppleAudio
             lastSpeechResultAt = piece.receivedAt
             if !seenSpeechResult {
                 seenSpeechResult = true
-                log("speech_first_result", offset: piece.end, fields: ["range_start_to_receipt_ms": "\(Int(piece.receivedAt.timeIntervalSince(session.startedAt.addingTimeInterval(piece.start)) * 1000))", "range_end_to_receipt_ms": "\(Int(piece.receivedAt.timeIntervalSince(session.startedAt.addingTimeInterval(piece.end)) * 1000))"])
+                log("speech_first_result", offset: piece.end, fields: speechTiming(piece, session: session))
             }
             if !final {
                 volatileEnglish = piece.text
                 if Date().timeIntervalSince(lastPartialLog) >= 1 {
                     lastPartialLog = Date()
-                    log("speech_partial", offset: piece.end, fields: ["range_start": "\(piece.start)", "range_end": "\(piece.end)", "end_to_receipt_ms": "\(Int(piece.receivedAt.timeIntervalSince(session.startedAt.addingTimeInterval(piece.end)) * 1000))"])
+                    log("speech_partial", offset: piece.end, fields: speechTiming(piece, session: session))
                 }
             } else {
                 let previousEnd = finalCursor.end
@@ -209,7 +211,7 @@ import WLAppleAudio
                 }
                 volatileEnglish = ""
                 enqueue { try await self.store.appendFinal(piece, session: session.id) }
-                log("speech_finalized", offset: piece.end, fields: ["range_start": "\(piece.start)", "range_end": "\(piece.end)", "end_to_receipt_ms": "\(Int(piece.receivedAt.timeIntervalSince(session.startedAt.addingTimeInterval(piece.end)) * 1000))"])
+                log("speech_finalized", offset: piece.end, fields: speechTiming(piece, session: session))
                 if let segment = buffer.append(piece) { persistSegment(segment) }
                 scheduleBufferFlush()
             }
@@ -321,9 +323,24 @@ import WLAppleAudio
         let seconds = await recorder.recordedDuration()
         session?.updateRecordingDuration(seconds)
     }
+    private func speechTiming(_ piece: SpeechPiece, session: LectureSession) -> [String: String] {
+        var fields = ["range_start": "\(piece.start)", "range_end": "\(piece.end)"]
+        let startDate = piece.audioStartedAt ?? (session.usesRecordingTimeline ? nil : session.startedAt.addingTimeInterval(piece.start))
+        let endDate = piece.audioEndedAt ?? (session.usesRecordingTimeline ? nil : session.startedAt.addingTimeInterval(piece.end))
+        if let startDate { fields["range_start_to_receipt_ms"] = "\(Int(max(0, piece.receivedAt.timeIntervalSince(startDate)) * 1000))" }
+        if let endDate {
+            let milliseconds = "\(Int(max(0, piece.receivedAt.timeIntervalSince(endDate)) * 1000))"
+            fields["range_end_to_receipt_ms"] = milliseconds; fields["end_to_receipt_ms"] = milliseconds
+        }
+        return fields
+    }
     private func log(_ event: String, offset: Double? = nil, fields: [String: String] = [:], gap: String? = nil) {
         guard let id = session?.id else { return }
         var fields = fields; if let gap { fields["gap"] = gap }
+        if session?.usesRecordingTimeline == true {
+            fields["timeline"] = SessionTimeline.recordedAudio.rawValue
+            fields["wall_offset"] = "\(Date().timeIntervalSince(session!.startedAt))"
+        }
         let item = Diagnostic(event, offset: offset ?? timelineOffset, fields: fields)
         enqueue { try await self.store.log(item, session: id) }
     }
@@ -357,7 +374,7 @@ import WLAppleAudio
         let chunks = saved.audioFiles.map { AudioExportChunk(url: folder.appendingPathComponent($0), start: offsets[$0]) }
         let directory = folder.appendingPathComponent("Exports", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return try await AudioExporter.m4a(chunks: chunks, destination: directory.appendingPathComponent("WilliamLecture-\(UUID().uuidString).m4a"))
+        return try await AudioExporter.m4a(chunks: chunks, destination: directory.appendingPathComponent("WilliamLecture-\(UUID().uuidString).m4a"), preservingGaps: !saved.usesRecordingTimeline)
     }
     func retrySpeech() async {
         guard recording, !busy else { return }; busy = true; defer { busy = false }

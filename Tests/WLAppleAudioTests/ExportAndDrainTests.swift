@@ -55,6 +55,21 @@ final class ExportAndDrainTests: XCTestCase {
         let files = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         XCTAssertEqual(files.map(\.lastPathComponent), [first.lastPathComponent])
     }
+    func testRecordedAudioM4AJoinsPausedChunksAtTranscriptPositions() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let first = try writeTone(root: root, index: 0, rate: 48_000, channels: 1, frames: 24000)
+        let second = try writeTone(root: root, index: 1, rate: 44_100, channels: 2, frames: 22050)
+        let destination = root.appendingPathComponent("pause-free.m4a")
+        // Even a physical 30-second pause must not insert silence into the recorded-audio export.
+        _ = try await AudioExporter.m4a(chunks: [AudioExportChunk(url: first, start: 0), AudioExportChunk(url: second, start: 30.5)], destination: destination, preservingGaps: false)
+        let reader = try AVAudioFile(forReading: destination)
+        XCTAssertEqual(Double(reader.length) / reader.processingFormat.sampleRate, 1, accuracy: 0.05)
+        reader.framePosition = AVAudioFramePosition(reader.processingFormat.sampleRate * 0.7)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: reader.processingFormat, frameCapacity: 4096))
+        try reader.read(into: buffer)
+        var levels = PCMLevelAccumulator(); levels.append(buffer)
+        XCTAssertGreaterThan(levels.snapshotAndReset().rms, 0.02, "Second utterance must play at its pause-free transcript position")
+    }
     func testThreeHourChunkCountExportsWithBoundedStreamingBuffers() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         var chunks: [AudioExportChunk] = []

@@ -3,6 +3,7 @@ import Foundation
 public enum SessionState: String, Codable, Sendable { case recording, paused, stopped, interrupted, recovered }
 public enum TranslationStatus: String, Codable, Sendable { case pending, completed, mock, failed }
 public enum ExportLanguage: String, CaseIterable, Sendable { case english, chinese, bilingual }
+public enum SessionTimeline: String, Codable, Sendable { case recordedAudio }
 
 public struct LectureSession: Codable, Identifiable, Sendable {
     public var id: UUID
@@ -13,19 +14,24 @@ public struct LectureSession: Codable, Identifiable, Sendable {
     public var duration: Double
     /// Captured PCM seconds, excluding pauses. Nil on journals written before 0.0.6.
     public var recordedDuration: Double?
+    /// Nil means a legacy session with wall-time offsets, including pause gaps.
+    public var timeline: SessionTimeline?
+    public var usesRecordingTimeline: Bool { timeline == .recordedAudio }
     public var recordingSeconds: Double { max(0, recordedDuration ?? 0) }
     public var audioFiles: [String]
     public init(course: String, now: Date = Date()) {
         id = UUID(); self.course = course; startedAt = now
-        state = .recording; duration = 0; recordedDuration = 0; audioFiles = []
+        state = .recording; duration = 0; recordedDuration = 0; timeline = .recordedAudio; audioFiles = []
     }
     public mutating func updateRecordingDuration(_ seconds: Double) {
         guard seconds.isFinite, seconds >= 0 else { return }
         recordedDuration = max(recordingSeconds, seconds)
+        if usesRecordingTimeline { duration = recordingSeconds }
     }
-    /// Speech, diagnostics and M4A use the session axis, retaining pause gaps.
+    /// New sessions share one captured-audio axis across the timer, Speech and exports.
     public func timelineOffset(now: Date = Date()) -> Double {
-        [.stopped, .recovered].contains(state) ? duration : max(0, now.timeIntervalSince(startedAt))
+        if usesRecordingTimeline { return recordingSeconds }
+        return [.stopped, .recovered].contains(state) ? duration : max(0, now.timeIntervalSince(startedAt))
     }
 }
 
@@ -37,6 +43,8 @@ public struct TranscriptSegment: Codable, Identifiable, Sendable, Equatable {
     public var chinese: String?
     public var status: TranslationStatus
     public var receivedAt: Date
+    /// Real capture date, independent of the pause-free audio position.
+    public var audioEndedAt: Date?
     /// Buffer emission time; optional so existing on-device journals remain readable.
     public var queuedAt: Date?
     public var submittedAt: Date?
@@ -48,6 +56,10 @@ public struct TranscriptSegment: Codable, Identifiable, Sendable, Equatable {
         id = UUID(); self.start = max(0, start); self.end = max(start, end)
         self.english = english; self.receivedAt = receivedAt; status = .pending; attempts = 0
     }
+    public func audioEndDate(in session: LectureSession) -> Date? {
+        if let audioEndedAt { return audioEndedAt }
+        return session.usesRecordingTimeline ? nil : session.startedAt.addingTimeInterval(end)
+    }
 }
 
 public struct SpeechPiece: Codable, Sendable, Equatable {
@@ -55,8 +67,11 @@ public struct SpeechPiece: Codable, Sendable, Equatable {
     public var start: Double
     public var end: Double
     public var receivedAt: Date
-    public init(text: String, start: Double, end: Double, receivedAt: Date = Date()) {
+    public var audioStartedAt: Date?
+    public var audioEndedAt: Date?
+    public init(text: String, start: Double, end: Double, receivedAt: Date = Date(), audioStartedAt: Date? = nil, audioEndedAt: Date? = nil) {
         self.text = text; self.start = start; self.end = end; self.receivedAt = receivedAt
+        self.audioStartedAt = audioStartedAt; self.audioEndedAt = audioEndedAt
     }
 }
 
@@ -89,10 +104,35 @@ public struct SentenceBuffer: Sendable {
     }
     public mutating func flush() -> TranscriptSegment? {
         guard let first = pieces.first, let last = pieces.last else { return nil }
-        let result = TranscriptSegment(start: first.start, end: last.end,
+        var result = TranscriptSegment(start: first.start, end: last.end,
             english: pieces.map(\.text).joined(separator: " "), receivedAt: last.receivedAt)
+        result.audioEndedAt = last.audioEndedAt
         pieces.removeAll(keepingCapacity: true)
         return result
+    }
+}
+
+/// Maps audio positions back to real capture dates for latency measurements.
+/// Store an anchor only when the physical clock changes by at least 50 ms;
+/// a continuous multi-hour run needs one anchor rather than one per PCM packet.
+public struct AudioCaptureDates: Sendable {
+    private struct Anchor: Sendable { let offset: Double; let at: Date }
+    private var anchors: [Anchor] = []
+    public var anchorCount: Int { anchors.count }
+    public init() {}
+    public mutating func observe(offset: Double, capturedAt: Date) {
+        guard offset.isFinite, offset >= 0, capturedAt.timeIntervalSince1970.isFinite else { return }
+        if let last = anchors.last {
+            guard offset > last.offset else { return }
+            let predicted = last.at.addingTimeInterval(offset - last.offset)
+            if abs(predicted.timeIntervalSince(capturedAt)) < 0.05 { return }
+        }
+        anchors.append(Anchor(offset: offset, at: capturedAt))
+    }
+    public func date(at offset: Double) -> Date? {
+        guard offset.isFinite, let first = anchors.first else { return nil }
+        let anchor = anchors.last(where: { $0.offset <= offset }) ?? first
+        return anchor.at.addingTimeInterval(offset - anchor.offset)
     }
 }
 
