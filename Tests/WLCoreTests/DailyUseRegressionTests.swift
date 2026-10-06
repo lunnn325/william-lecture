@@ -96,6 +96,32 @@ final class DailyUseRegressionTests: XCTestCase {
         XCTAssertEqual(AudioRepairRange.unfinishedTail(finalEnd: 4, audioEnd: 8, partial: nil, failed: true), .init(start: 4, end: 8))
         XCTAssertNil(AudioRepairRange.unfinishedTail(finalEnd: 6, audioEnd: 8, partial: partial, failed: false))
     }
+    @MainActor func testServerFailureRecoversWithoutNetworkPathChange() async throws {
+        let (root, store, session) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = TranscriptSegment(start: 0, end: 1, english: "Yes?")
+        try await store.append(source, session: session.id)
+        let attempts = ShortResponseAttempts()
+        let worker = TranslationWorker(store: store, config: .init(mock: false, model: "test-only", key: nil), session: session,
+            recoveryDelay: 0.02, operation: { _, _ in
+                if await attempts.next() <= 3 { throw APIError(status: 500, retryAfter: 0) }; return "是吗？"
+            })
+        let done = expectation(description: "The timer resumes a failed server request without an NWPathMonitor change")
+        worker.onUpdate = { if $0.status == .completed { done.fulfill() } }
+        worker.kick(); await fulfillment(of: [done], timeout: 3); await worker.waitForCancellation()
+        let saved = try await store.segments(session.id)
+        XCTAssertEqual(saved.first?.attempts, 4); XCTAssertEqual(saved.first?.finalChinese, "是吗？")
+    }
+    func testLibraryFieldMergeKeepsStoppedLifecycleAndManualTitle() async throws {
+        let (root, store, initial) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        var ended = initial; ended.state = .stopped; ended.updateRecordingDuration(42)
+        ended.title = "Week 6"; try await store.save(ended)
+        try await store.saveNote(LectureNote(offset: 10), session: ended.id)
+        try await store.updateLibraryFields(initial.id, preview: "Updated summary")
+        let history = try await store.sessions()
+        XCTAssertEqual(history.first?.state, .stopped); XCTAssertEqual(history.first?.duration, 42)
+        XCTAssertEqual(history.first?.title, "Week 6"); XCTAssertEqual(history.first?.markCount, 1)
+        XCTAssertEqual(history.first?.preview, "Updated summary")
+    }
     func testCompletedTextWithDeferredAudioRepairExportsWarningAndKeepsTranslation() async throws {
         let (root, store, session) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
         var source = TranscriptSegment(start: 0, end: 1, english: "Yes?")

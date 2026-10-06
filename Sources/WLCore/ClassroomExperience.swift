@@ -30,6 +30,13 @@ public extension SessionStore {
         }
         try JSONLines.append(note, to: folder(session).appendingPathComponent("notes.jsonl"))
     }
+    /// Merge library fields in one actor turn; never write an old lifecycle/title snapshot.
+    func updateLibraryFields(_ id: UUID, preview: String? = nil) throws {
+        guard var current = try sessions().first(where: { $0.id == id }) else { throw WLFailure.message("课堂不存在") }
+        if let preview { current.preview = preview }
+        current.markCount = try notes(id).filter(\.marked).count
+        try save(current)
+    }
     func exportNotes(_ session: UUID, markdown: Bool) throws -> URL {
         let directory = folder(session).appendingPathComponent("Exports", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

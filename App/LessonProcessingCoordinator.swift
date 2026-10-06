@@ -151,11 +151,7 @@ import WLCore
                 document.title = title; document.overview = overview; document.outline = outline
             }
             document.state = .completed; document.error = nil; try await save(&document)
-            if var saved = try await store.sessions().first(where: { $0.id == session.id }) {
-                saved.preview = document.overview
-                saved.markCount = try await store.notes(session.id).filter(\.marked).count
-                try await store.save(saved)
-            }
+            try await store.updateLibraryFields(session.id, preview: document.overview)
             try await store.log(Diagnostic("lesson_processing_complete", fields: ["segments": "\(sources.count)", "fingerprint": document.fingerprint]), session: session.id)
             change += 1
         } catch is CancellationError {

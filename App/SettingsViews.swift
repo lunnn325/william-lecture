@@ -58,7 +58,7 @@ struct LectureSettingsView: View {
             }
             Section {
                 NavigationLink { DiagnosticsView() } label: { Label("状态与诊断", systemImage: "stethoscope") }
-                Text("William Lecture 1.1.0\n记录保存在本机。").font(.footnote).foregroundStyle(Color.williamSecondary)
+                Text("William Lecture \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")\n记录保存在本机。").font(.footnote).foregroundStyle(Color.williamSecondary)
             }
         }.navigationTitle("设置").navigationBarTitleDisplayMode(inSheet ? .inline : .large)
             .toolbar { if inSheet { ToolbarItem(placement: .confirmationAction) { Button("完成") { if controller.active || controller.busy { dismiss() } else { save(); if error.isEmpty { dismiss() } } }.disabled(preparing) } } }

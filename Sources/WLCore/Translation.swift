@@ -104,12 +104,14 @@ public final class Translator: @unchecked Sendable {
     private let session: LectureSession
     private let operation: TranslationOperation
     private let maxConcurrent: Int
+    private let recoveryDelay: Double
     var resourceCounts: (requests: Int, streams: Int) { (requests.count, streamingText.count + streamingFirst.count) }
 
     public init(store: SessionStore, config: TranslatorConfiguration, session: LectureSession,
-                maxConcurrent: Int = 2, operation: TranslationOperation? = nil) {
+                maxConcurrent: Int = 2, recoveryDelay: Double = 30, operation: TranslationOperation? = nil) {
         self.store = store; self.config = config; self.session = session
         self.maxConcurrent = max(1, min(2, maxConcurrent))
+        self.recoveryDelay = recoveryDelay.isFinite ? max(0, recoveryDelay) : 30
         let translator = Translator()
         self.operation = operation ?? { segment, delta in
             let entry = UsageEntry(scope: .live, model: config.model)
@@ -259,8 +261,9 @@ public final class Translator: @unchecked Sendable {
     private func scheduleRecovery() {
         guard retryWake == nil, automaticWakeCount < 2, !manuallyCancelled else { return }
         automaticWakeCount += 1
+        let delay = recoveryDelay
         retryWake = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
             guard let self, !manuallyCancelled else { return }
             retryWake = nil; kick(force: true)
         }

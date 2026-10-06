@@ -445,9 +445,7 @@ import WLAppleAudio
             var saved = note; saved.updatedAt = Date(); try await store.saveNote(saved, session: id)
             let notes = try await store.notes(id)
             if session?.id == id { sessionNotes = notes }
-            if !active, var savedSession = try await store.sessions().first(where: { $0.id == id }) {
-                savedSession.markCount = notes.filter(\.marked).count; try await store.save(savedSession)
-            }
+            if !active { try await store.updateLibraryFields(id) }
             return true
         } catch { warning = "笔记保存失败：\(error.localizedDescription)"; return false }
     }
