@@ -2,7 +2,7 @@ import XCTest
 import UIKit
 
 @MainActor final class V1FlowTests: XCTestCase {
-    override func setUp() { continueAfterFailure = false }
+    override func setUp() { super.setUp(); continueAfterFailure = false; XCUIDevice.shared.orientation = .portrait }
     func testReadingMarkNotePauseStopPlaybackAndExport() {
         let app = launch(active: true)
         let pause = app.buttons["pause-recording"]
@@ -51,10 +51,10 @@ import UIKit
         app.buttons["course-picker"].tap()
         let course = app.textFields["new-course-name"]; XCTAssertTrue(course.waitForExistence(timeout: 5))
         course.tap(); course.typeText("FINN1000"); app.buttons["添加并选择"].tap()
-        XCTAssertTrue(app.staticTexts["FINN1000"].exists)
-        app.tabBars.buttons["记录"].tap()
+        XCTAssertTrue(app.buttons["course-picker"].label.contains("FINN1000"))
+        selectTab("记录", app: app)
         XCTAssertTrue(app.staticTexts["ECON1111 · 微观经济学"].waitForExistence(timeout: 5)); capture(app, "history")
-        app.tabBars.buttons["设置"].tap()
+        selectTab("设置", app: app)
         XCTAssertTrue(app.staticTexts["本机中文"].waitForExistence(timeout: 5)); capture(app, "settings")
         app.swipeUp(); XCTAssertTrue(app.secureTextFields.firstMatch.waitForExistence(timeout: 5)); capture(app, "settings-key")
         app.buttons["状态与诊断"].tap(); XCTAssertTrue(app.staticTexts["当前链路"].waitForExistence(timeout: 5))
@@ -67,6 +67,12 @@ import UIKit
             XCTAssertTrue(app.buttons["stop-recording"].isHittable)
             app.terminate()
         }
+        let app = launch(active: true)
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(app.buttons["pause-recording"].waitForExistence(timeout: 20))
+        capture(app, "workspace-landscape")
+        XCTAssertTrue(app.buttons["stop-recording"].isHittable)
+        XCUIDevice.shared.orientation = .portrait
     }
     private func launch(active: Bool, extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication(); app.launchArguments = ["--wl-ui-fixture"] + (active ? ["--wl-fixture-active"] : []) + extra
@@ -75,6 +81,10 @@ import UIKit
     private func waitEnabled(_ element: XCUIElement) {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in element.isEnabled }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 20), .completed)
+    }
+    private func selectTab(_ name: String, app: XCUIApplication) {
+        let tab = app.tabBars.buttons[name]
+        if tab.exists { tab.tap() } else { app.buttons[name].firstMatch.tap() }
     }
     private func capture(_ app: XCUIApplication, _ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())

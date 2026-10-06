@@ -144,7 +144,7 @@ struct WorkspaceView: View {
                             }
                             Text("英语 → 中文").font(.caption).foregroundStyle(.secondary)
                         }.foregroundStyle(.primary).frame(minHeight: 44)
-                    }.disabled(controller.active || controller.busy).accessibilityLabel("选择课程").accessibilityIdentifier("course-picker")
+                    }.disabled(controller.active || controller.busy).accessibilityLabel("选择课程，\(controller.course)").accessibilityIdentifier("course-picker")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { settings = true } label: { Image(systemName: "gearshape") }
