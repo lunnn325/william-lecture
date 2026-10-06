@@ -329,7 +329,13 @@ struct WorkspaceView: View {
             .background(selectedCaption?.id == caption.id ? Color.williamAccent.opacity(0.04) : Color.clear)
             .onTapGesture(count: 2) { readerDragged = false; selectedCaption = caption; feed.suspend(); Task { await controller.toggleMark(caption) } }
             .onTapGesture { readerDragged = false; selectedCaption = caption; feed.suspend() }
-            .onLongPressGesture(minimumDuration: 0.5) { readerDragged = false; selectedCaption = caption; feed.suspend(); editNote(caption) }
+            .onLongPressGesture(minimumDuration: 0.5, perform: {
+                readerDragged = false; selectedCaption = caption; feed.suspend(); editNote(caption)
+            }, onPressingChanged: { pressing in
+                // Freeze at finger-down, before new partials can scroll this target
+                // away during the long-press recognition interval.
+                if pressing { readerDragged = false; feed.suspend() }
+            })
             .accessibilityAction(named: "标记此句") { Task { await controller.toggleMark(caption) } }
             .accessibilityAction(named: "写笔记") { editNote(caption) }
             .accessibilityAction(named: "复制英文") { UIPasteboard.general.string = caption.english }

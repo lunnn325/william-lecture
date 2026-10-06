@@ -139,6 +139,8 @@ import UIKit
         XCTAssertTrue(app.buttons["pause-recording"].waitForExistence(timeout: 20))
         let rotated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in app.frame.width > app.frame.height }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [rotated], timeout: 10), .completed)
+        waitForLatestCaption(app)
+        waitEnabled(app.buttons["pause-recording"])
         app.buttons["pause-recording"].tap()
         XCTAssertTrue(app.staticTexts["已暂停"].waitForExistence(timeout: 5))
         app.buttons["pause-recording"].tap()
@@ -169,7 +171,11 @@ import UIKit
     }
     private func launch(active: Bool, extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication(); app.launchArguments = ["--wl-ui-fixture"] + (active ? ["--wl-fixture-active"] : []) + extra
-        app.launch(); return app
+        app.launch()
+        let control = app.buttons[active ? "pause-recording" : "start-recording"]
+        XCTAssertTrue(control.waitForExistence(timeout: 20)); waitEnabled(control)
+        if active { waitForLatestCaption(app) }
+        return app
     }
     private func waitEnabled(_ element: XCUIElement) {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in element.isEnabled }, object: nil)
