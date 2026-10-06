@@ -112,7 +112,8 @@ import UIKit
         XCTAssertEqual(row.value as? String, "1", "Export option must actually be enabled")
     }
     private func capture(_ app: XCUIApplication, _ name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        // Capture the device screen: app.screenshot() can crop a rotated iOS 26 window.
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = "\(UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "phone")-\(name)"
         attachment.lifetime = .keepAlways; add(attachment)
     }
