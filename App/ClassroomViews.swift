@@ -78,6 +78,7 @@ struct WorkspaceView: View {
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var feed = CaptionFeed()
     @State private var nearBottom = true
+    @State private var readerDragged = false
     @State private var viewportSize = CGSize.zero
     @State private var settings = false
     @State private var status = false
@@ -142,9 +143,10 @@ struct WorkspaceView: View {
                             geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height + geometry.contentInsets.bottom - 80
                         } action: { _, value in nearBottom = value }
                         .onScrollPhaseChange { _, phase in
-                            if phase == .interacting { feed.suspend() }
-                            if phase == .idle && nearBottom && !feed.following {
-                                Task { await latest(proxy) }
+                            if phase == .interacting { readerDragged = true; feed.suspend() }
+                            if phase == .idle && readerDragged {
+                                readerDragged = false
+                                if nearBottom && !feed.following { Task { await latest(proxy) } }
                             }
                         }
                         .overlay(alignment: .bottomTrailing) {
