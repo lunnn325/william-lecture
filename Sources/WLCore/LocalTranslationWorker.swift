@@ -110,7 +110,13 @@ public typealias LocalTranslationOperation = @Sendable (String) async throws -> 
                     let accepted = onDraft?(draft, text, at) ?? .stale
                     resultFields["acceptance"] = accepted.rawValue
                     resultFields["partial_to_result_ms"] = "\(Int(max(0, at.timeIntervalSince(draft.partialFirstAt)) * 1000))"
-                    record(Diagnostic(accepted == .stale ? "local_stale_response" : "local_draft_result", offset: offset, fields: resultFields, at: at))
+                    if accepted == .stale, let promoted = try await promoteFinalizedDraft(draft, text: text, request: request, at: at) {
+                        resultFields["from_partial_request"] = "true"
+                        onUpdate?(promoted)
+                        record(Diagnostic("local_translation_completed", offset: promoted.end, fields: resultFields, at: at))
+                    } else {
+                        record(Diagnostic(accepted == .stale ? "local_stale_response" : "local_draft_result", offset: offset, fields: resultFields, at: at))
+                    }
                 } else if let stable {
                     if let merged = try await store.applyLocal(stable, session: session, request: request, chinese: text, at: at) {
                         onUpdate?(merged); record(Diagnostic("local_translation_completed", offset: offset, fields: resultFields, at: at))
@@ -139,6 +145,17 @@ public typealias LocalTranslationOperation = @Sendable (String) async throws -> 
             await cancelOperation()
             // running remains occupied until the underlying operation actually returns.
         }
+    }
+    private func promoteFinalizedDraft(_ draft: DraftTranslationRequest, text: String, request: UUID, at: Date) async throws -> TranscriptSegment? {
+        // A final may arrive while the exact same partial request is in flight.
+        // Reuse only a durable full-source match, never a prefix or a revoked revision.
+        var source = TranscriptSegment(start: draft.start, end: draft.end, english: draft.english)
+        source.id = draft.captionID; source.revision = draft.revision
+        guard !disabled, !Task.isCancelled,
+              let current = try await store.translationSnapshot(source, session: session),
+              let begun = try await store.beginLocal(current, session: session, request: request) else { return nil }
+        if disabled || Task.isCancelled { try? await store.cancelLocal(begun, session: session, request: request); return nil }
+        return try await store.applyLocal(begun, session: session, request: request, chinese: text, at: at)
     }
     private func finish(_ request: UUID) {
         guard activeID == request else { return }

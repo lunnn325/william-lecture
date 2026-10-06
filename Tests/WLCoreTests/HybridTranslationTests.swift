@@ -295,6 +295,48 @@ final class HybridTranslationTests: XCTestCase {
         XCTAssertEqual(observed.sources.first, segment(7).english); XCTAssertEqual(observed.sources[1], segment(0).english)
         XCTAssertEqual(local.resourceCounts.pendingDraft, 0)
     }
+    @MainActor func testContinuousForegroundDraftsAlternateWithDurableStableWork() async throws {
+        let (root, store, classroom) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        for index in 0..<8 { try await store.append(segment(index), session: classroom.id) }
+        let probe = LocalProbe(); let local = LocalTranslationWorker(store: store, session: classroom.id,
+            draftDelay: 0, draftInterval: 0, operation: { await probe.translate($0) })
+        let done = expectation(description: "Stable history does not starve"); done.expectedFulfillmentCount = 8
+        var draftCount = 0; let id = UUID(), epoch = UUID()
+        local.onDraft = { [weak local] _, _, _ in
+            draftCount += 1
+            if draftCount < 8 { local?.offer(self.request(session: classroom.id, id: id, epoch: epoch, revision: draftCount + 1, text: "draft \(draftCount)")) }
+            return .exact
+        }
+        local.onUpdate = { if $0.validLocalChinese != nil { done.fulfill() } }
+        local.offer(request(session: classroom.id, id: id, epoch: epoch, text: "draft 0"))
+        await fulfillment(of: [done], timeout: 8); await local.shutdown(); await local.flushDiagnostics()
+        let observed = await probe.snapshot(); XCTAssertEqual(observed.maximum, 1); XCTAssertEqual(draftCount, 8)
+        XCTAssertEqual(observed.sources.count, 16)
+        for index in 0..<8 {
+            XCTAssertTrue(observed.sources[index * 2].hasPrefix("draft"))
+            XCTAssertTrue(observed.sources[index * 2 + 1].hasPrefix("The cost"))
+        }
+    }
+    @MainActor func testInFlightExactPartialCanCompleteStableSegmentWithoutSecondTranslation() async throws {
+        let (root, store, classroom) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let probe = LocalProbe(gated: true); let requested = request(session: classroom.id, text: "Exact stable words.")
+        let local = LocalTranslationWorker(store: store, session: classroom.id,
+            draftDelay: 0, draftInterval: 0, operation: { await probe.translate($0) })
+        local.onDraft = { _, _, _ in .stale } // UI already moved beyond the finalized caption.
+        let done = expectation(description: "Promoted into durable finalized record")
+        local.onUpdate = { if $0.validLocalChinese != nil { done.fulfill() } }
+        local.offer(requested)
+        for _ in 0..<100 {
+            if !(await probe.snapshot()).sources.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        var stable = segment(); stable.id = requested.captionID; stable.english = requested.english; stable.revision = requested.revision
+        try await store.append(stable, session: classroom.id); local.kick(); await probe.release()
+        await fulfillment(of: [done], timeout: 3); await local.shutdown(); await local.flushDiagnostics()
+        let observed = await probe.snapshot(); XCTAssertEqual(observed.sources, [requested.english])
+        let persisted = try await store.segments(classroom.id)
+        XCTAssertEqual(persisted[0].validLocalChinese, "本机：" + requested.english)
+    }
     @MainActor func testDeadlineDoesNotReleaseUncooperativeSlotOrAcceptLateDraft() async throws {
         let (root, store, classroom) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let probe = LocalProbe(gated: true)

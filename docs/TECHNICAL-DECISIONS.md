@@ -6,7 +6,7 @@
 
 本机路径是独立服务，默认开启；前台 partial 在 UI 内替换，不追加进正式文字稿。约 300 ms 合并，连续修订不重置等待期限，partial 请求至少间隔约 500 ms；一个实际请求和一个最新待处理 partial。稳定内容由磁盘日志索引读取，与草稿交替，稳定队列交替取最新/最旧。后台撤销未定稿任务身份，只处理稳定段；系统是否允许后台执行仍须真机确认。
 
-字幕 ID 在 Buffer 形成时预分配，定稿沿用同 ID。revision、原文快照、课堂 ID、epoch/请求 token 防止迟到回调串台。只追加时可接受仍完整保留的旧词边界前缀；否定改写、撤销、重启不能接受旧结果。无法按时间可靠切分的重叠 partial 撤销，不猜字符边界。显示过的中文允许暂留，但只有完整稳定英文完全匹配的本机译文能作为导出兜底；partial 永不进入正式稿。
+字幕 ID 在 Buffer 形成时预分配，定稿沿用同 ID。revision、原文快照、课堂 ID、epoch/请求 token 防止迟到回调串台。只追加时可接受仍完整保留的旧词边界前缀；否定改写、撤销、重启不能接受旧结果。无法按时间可靠切分的重叠 partial 撤销，不猜字符边界。显示过的中文允许暂留，但只有完整稳定英文完全匹配的本机译文能作为导出兜底；partial 永不进入正式稿。请求执行期间若同 ID/全文/revision 已落盘定稿，结果可通过严格检查转为该完整段翻译，避免完全相同英文再请求一次。
 
 使用独立 `TranslationSession(installedSource:target:)`，仅处理已安装模型；iOS 26.4+ 显式 `.lowLatency`，26.0–26.3 默认传统会话。设置页检查英语→简体中文，`.translationTask` 负责用户授权/下载。录课期间不调用 prepareTranslation。iPhone 14 Pro Max 不需要 Apple Intelligence；模拟器使用假译者，不能验证真实翻译。[Apple 会话接口](https://developer.apple.com/documentation/translation/translationsession/init(installedsource:target:))、[低延迟策略](https://developer.apple.com/documentation/translation/translationsession/strategy/lowlatency)、[设备限制](https://developer.apple.com/documentation/translation/translating-text-within-your-app)。
 
