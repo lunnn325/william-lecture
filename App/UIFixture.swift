@@ -55,6 +55,13 @@ extension LectureController {
         lesson.updateRecordingDuration(24); lesson.audioFiles = ["fixture.caf"]
         try await store.save(lesson)
         let folder = store.folder(lesson.id), audio = folder.appendingPathComponent("fixture.caf")
+        // Each launch is an independent UI test. Keep the generated audio, but reset
+        // simulated journals so a prior test's markers/new captions cannot leak in.
+        guard isUIFixture, store.root.lastPathComponent == "UIFixture" else { return }
+        for name in ["transcript.jsonl", "notes.jsonl", "content.json", "diagnostics.jsonl", "usage.jsonl"] {
+            let file = folder.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+        }
         if !FileManager.default.fileExists(atPath: audio.path) {
             let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
             let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 48000 * 24)!
