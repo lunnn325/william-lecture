@@ -1,0 +1,203 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-06T13:09:57.021Z",
+  "title": "Design System: William Lecture V1",
+  "extensions": {
+    "colorMeta": {
+      "deep-teal": {
+        "role": "primary",
+        "displayName": "Deep Teal",
+        "tonalRamp": [
+          "oklch(15% 0.0779 204.01)",
+          "oklch(25% 0.0779 204.01)",
+          "oklch(35% 0.0779 204.01)",
+          "oklch(45% 0.0779 204.01)",
+          "oklch(55% 0.0779 204.01)",
+          "oklch(65% 0.0779 204.01)",
+          "oklch(80% 0.0779 204.01)",
+          "oklch(95% 0.0779 204.01)"
+        ]
+      },
+      "reading-secondary": {
+        "role": "neutral",
+        "displayName": "Reading Secondary",
+        "tonalRamp": [
+          "oklch(15% 0.0102 248.02)",
+          "oklch(25% 0.0102 248.02)",
+          "oklch(35% 0.0102 248.02)",
+          "oklch(45% 0.0102 248.02)",
+          "oklch(55% 0.0102 248.02)",
+          "oklch(65% 0.0102 248.02)",
+          "oklch(80% 0.0102 248.02)",
+          "oklch(95% 0.0102 248.02)"
+        ]
+      },
+      "recovery-warning": {
+        "role": "warning",
+        "displayName": "Recovery Warning",
+        "tonalRamp": [
+          "oklch(15% 0.1257 47.06)",
+          "oklch(25% 0.1257 47.06)",
+          "oklch(35% 0.1257 47.06)",
+          "oklch(45% 0.1257 47.06)",
+          "oklch(55% 0.1257 47.06)",
+          "oklch(65% 0.1257 47.06)",
+          "oklch(80% 0.1257 47.06)",
+          "oklch(95% 0.1257 47.06)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "chinese-title2": {
+        "displayName": "Chinese · Title 2 Medium",
+        "purpose": "SwiftUI .title2.weight(.medium), primary Chinese; Dynamic Type and native Chinese fallback are normative. Browser specimens are approximate."
+      },
+      "english-subheadline": {
+        "displayName": "English · Subheadline",
+        "purpose": "SwiftUI .subheadline in readable adaptive secondary, fully wrapped above Chinese."
+      },
+      "timestamp-caption2": {
+        "displayName": "Timestamp · Caption 2",
+        "purpose": "SwiftUI .caption2 with monospaced digits below the caption; adaptive secondary."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "SwiftUI .headline for course identity, history course titles, and start action; native Dynamic Type."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "SwiftUI .body and platform-default form body text; native Dynamic Type."
+      },
+      "action-subheadline": {
+        "displayName": "Follow Latest · Medium Subheadline",
+        "purpose": "SwiftUI .subheadline.weight(.medium) for return-to-latest; native Dynamic Type."
+      },
+      "timer-callout": {
+        "displayName": "Timer · Monospaced Callout",
+        "purpose": "SwiftUI .system(.callout, design: .monospaced) with monospaced digits for the recording clock."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "caption-replacement",
+        "value": "none",
+        "purpose": "The caption scroll transaction disables animations; local draft and GPT replacement retain row UUIDs without disruptive motion."
+      },
+      {
+        "name": "viewport-settle-delay",
+        "value": "350ms",
+        "purpose": "After a settled viewport-size change, re-anchor only while follow is active, the task is not cancelled, and the session identity is unchanged. New resize tasks cancel earlier checks. This is follow timing, not caption replacement animation."
+      }
+    ],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Start Recording",
+      "kind": "button",
+      "refersTo": "button-start",
+      "description": "Browser approximation of the native prominent start capsule (52 pt in SwiftUI); production uses SF Symbols and native Dynamic Type.",
+      "html": "<div class=\"ds-sample\"><button type=\"button\" class=\"ds-start\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"8\" y=\"2\" width=\"8\" height=\"13\" rx=\"4\"/><path d=\"M5 11v2a7 7 0 0 0 14 0v-2M12 20v2M8 22h8\"/></svg><span>开始录音</span></button></div>",
+      "css": ".ds-sample {color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:CanvasText;background:Canvas;padding:16px;} .ds-start{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:52px;padding:0 20px;border:none;border-radius:9999px;background:light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%));color:white;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;font-size:17px;cursor:pointer;} .ds-start:hover{filter:brightness(.96);} .ds-start:focus-visible{outline:3px solid light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%));outline-offset:3px;} .ds-start:active{opacity:.8;} .ds-start:disabled{opacity:.45;cursor:default;}.ds-start{font-weight:600;}"
+    },
+    {
+      "name": "Pause / Mark Control",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Browser approximation of the native bordered active control (48 pt in SwiftUI); native tint supplies the platform's border and fill treatment.",
+      "html": "<div class=\"ds-sample\"><button type=\"button\" class=\"ds-secondary\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M9 5v14M15 5v14\"/></svg><span>暂停</span></button></div>",
+      "css": ".ds-sample {color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:CanvasText;background:Canvas;padding:16px;} .ds-secondary{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:48px;padding:0 20px;border:1px solid color-mix(in srgb,light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%)) 22%,Canvas);border-radius:9999px;background:color-mix(in srgb,light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%)) 8%,Canvas);color:light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%));font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;font-size:17px;cursor:pointer;} .ds-secondary:hover{filter:brightness(.96);} .ds-secondary:focus-visible{outline:3px solid light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%));outline-offset:3px;} .ds-secondary:active{opacity:.8;} .ds-secondary:disabled{opacity:.45;cursor:default;}"
+    },
+    {
+      "name": "Stop Recording",
+      "kind": "button",
+      "refersTo": "button-stop",
+      "description": "Browser approximation of the stop capsule (48 pt in SwiftUI). CanvasText/Canvas illustrate semantic primary/background; production uses native colors and a save confirmation.",
+      "html": "<div class=\"ds-sample\"><button type=\"button\" class=\"ds-stop\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"6\" y=\"6\" width=\"12\" height=\"12\" rx=\"1\" fill=\"currentColor\" stroke=\"none\"/></svg><span>停止</span></button></div>",
+      "css": ".ds-sample {color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:CanvasText;background:Canvas;padding:16px;} .ds-stop{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:48px;padding:0 20px;border:none;border-radius:9999px;background:CanvasText;color:Canvas;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;font-size:17px;cursor:pointer;} .ds-stop:hover{filter:brightness(.96);} .ds-stop:focus-visible{outline:3px solid light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%));outline-offset:3px;} .ds-stop:active{opacity:.8;} .ds-stop:disabled{opacity:.45;cursor:default;}"
+    },
+    {
+      "name": "Follow Latest",
+      "kind": "chip",
+      "refersTo": "follow-latest",
+      "description": "Browser approximation of the native return-to-latest capsule (minimum 44 pt in SwiftUI), shown only when follow is suspended.",
+      "html": "<div class=\"ds-sample\"><button type=\"button\" class=\"ds-follow\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 4v15M6 13l6 6 6-6\"/></svg><span>有新字幕 · 回到最新</span></button></div>",
+      "css": ".ds-sample {color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:CanvasText;background:Canvas;padding:16px;} .ds-follow{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 20px;border:none;border-radius:9999px;background:light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%));color:white;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;font-size:17px;cursor:pointer;} .ds-follow:hover{filter:brightness(.96);} .ds-follow:focus-visible{outline:3px solid light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%));outline-offset:3px;} .ds-follow:active{opacity:.8;} .ds-follow:disabled{opacity:.45;cursor:default;}.ds-follow{font-size:15px;font-weight:500;padding:0 16px;}"
+    },
+    {
+      "name": "Bilingual Caption",
+      "kind": "custom",
+      "refersTo": "caption-row",
+      "description": "Explicit sample content showing the implemented English / Chinese / timestamp hierarchy. Browser sizes approximate default system styles; native .subheadline / .title2 / .caption2 follow Dynamic Type. Native rows keep UUIDs and replace translation without animation.",
+      "html": "<div class=\"ds-sample\"><div class=\"ds-caption\" aria-label=\"示例字幕，非课堂记录\"><p class=\"ds-caption-english\">Example sentence for the reading hierarchy.</p><p class=\"ds-caption-chinese\" lang=\"zh-Hans\">这是一句用于展示阅读层级的示例字幕。</p><span class=\"ds-caption-time\">00:32</span></div></div>",
+      "css": ".ds-sample {color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:CanvasText;background:Canvas;padding:16px;} .ds-caption{display:flex;flex-direction:column;gap:10px;max-width:760px;padding:12px 0;} .ds-caption-english{margin:0;font-size:15px;color:light-dark(rgb(40% 42% 44%), rgb(66% 68% 70%));} .ds-caption-chinese{margin:0;font-size:22px;font-weight:500;line-height:1.5;color:CanvasText;} .ds-caption-time{font-size:11px;font-variant-numeric:tabular-nums;color:light-dark(rgb(40% 42% 44%), rgb(66% 68% 70%));} @media(prefers-reduced-motion:reduce){.ds-caption{animation:none;transition:none;}}"
+    },
+    {
+      "name": "Native Course Field",
+      "kind": "input",
+      "refersTo": "input-native",
+      "description": "Browser approximation of course entry in a system Form, with an adaptive reading-secondary prompt. SwiftUI owns the actual field shape, focus behavior, keyboard, and Dynamic Type.",
+      "html": "<div class=\"ds-sample\"><label class=\"ds-field-label\" for=\"ds-course-field\">添加课程</label><input class=\"ds-field\" id=\"ds-course-field\" type=\"text\" placeholder=\"例如 ECON1111 · 微观经济学\"/></div>",
+      "css": ".ds-sample {color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:CanvasText;background:Canvas;padding:16px;} .ds-field-label{display:block;margin-bottom:8px;font-size:15px;color:light-dark(rgb(40% 42% 44%), rgb(66% 68% 70%));} .ds-field{display:block;width:min(100%,340px);min-height:44px;padding:0 10px;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;font-size:17px;border:1px solid color-mix(in srgb,CanvasText 18%,Canvas);border-radius:8px;color:CanvasText;background:Canvas;} .ds-field:hover{border-color:light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%));} .ds-field:focus-visible{outline:3px solid light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%));outline-offset:2px;} .ds-field:disabled{opacity:.45;} .ds-field::placeholder{color:light-dark(rgb(40% 42% 44%),rgb(66% 68% 70%));opacity:1;}"
+    },
+    {
+      "name": "Native Three-Section Navigation",
+      "kind": "nav",
+      "refersTo": "navigation-selected",
+      "description": "Browser approximation of the native recording / records / settings tab bar. Native SwiftUI supplies appearance, safe areas, SF Symbols, selection, and hiding during active recording.",
+      "html": "<div class=\"ds-sample\"><nav class=\"ds-tabs\" aria-label=\"主导航\"><button type=\"button\" class=\"ds-tab ds-tab-selected\" aria-current=\"page\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 10v4M7 6v12M12 2v20M17 6v12M21 10v4\"/></svg><span>录课</span></button><button type=\"button\" class=\"ds-tab\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 7v5l3 2\"/></svg><span>记录</span></button><button type=\"button\" class=\"ds-tab\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M9 3h6l1 3 3 1 2 5-2 5-3 1-1 3H9l-1-3-3-1-2-5 2-5 3-1z\"/></svg><span>设置</span></button></nav></div>",
+      "css": ".ds-sample {color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:CanvasText;background:Canvas;padding:16px;} .ds-tabs{display:flex;gap:8px;max-width:380px;padding:8px;background:Canvas;} .ds-tab{display:flex;flex:1;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-width:44px;min-height:44px;border:0;background:transparent;color:light-dark(rgb(40% 42% 44%), rgb(66% 68% 70%));font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;font-size:11px;cursor:pointer;} .ds-tab-selected{color:light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%));} .ds-tab:hover{color:light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%));} .ds-tab:focus-visible{outline:3px solid light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%));outline-offset:2px;} .ds-tab:active{opacity:.7;}"
+    },
+    {
+      "name": "History Row",
+      "kind": "custom",
+      "refersTo": "history-row",
+      "description": "Browser approximation of a native plain-list navigation row, with explicitly labelled specimen course/date/duration. This is a list row, not a floating card.",
+      "html": "<div class=\"ds-sample\"><button type=\"button\" class=\"ds-history-row\"><span class=\"ds-history-copy\"><strong class=\"ds-history-title\">示例课程 · 非真实记录</strong><span class=\"ds-history-date\">2026年10月6日 10:00</span><span class=\"ds-history-meta\">45:00 · 已保存</span></span><span aria-hidden=\"true\">›</span></button></div>",
+      "css": ".ds-sample {color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:CanvasText;background:Canvas;padding:16px;} .ds-history-row{display:flex;align-items:center;justify-content:space-between;gap:12px;width:min(100%,380px);min-height:44px;padding:14px 0;text-align:left;border:0;border-bottom:1px solid color-mix(in srgb,CanvasText 15%,Canvas);background:Canvas;color:CanvasText;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;cursor:pointer;} .ds-history-copy{display:flex;flex-direction:column;gap:7px;} .ds-history-title{font-size:17px;font-weight:600;} .ds-history-date{font-size:15px;color:light-dark(rgb(40% 42% 44%), rgb(66% 68% 70%));} .ds-history-meta{font-size:12px;font-variant-numeric:tabular-nums;color:light-dark(rgb(40% 42% 44%), rgb(66% 68% 70%));} .ds-history-row:hover{color:light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%));} .ds-history-row:focus-visible{outline:3px solid light-dark(rgb(0% 39% 42%), rgb(35% 78% 80%));outline-offset:3px;} .ds-history-row:active{opacity:.75;}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Operate / Read",
+    "overview": "The interface is a quiet native lecture page. A brief glance should find the Chinese meaning, with the original English still readable above it. San Francisco, the system's Chinese font fallback, open transcript rows, and a constrained reading column carry the visual character.\n\nApple navigation, lists, forms, sheets, and materials provide the surrounding structure. Deep teal marks interactive state; neutral text carries the lecture. The supplied bilingual reference establishes the reading rhythm, while the current SwiftUI source establishes the tokens. This document records source-extracted tokens from commit `7f00f4607b8e1d16567f151a347b75ab738e04a9`. Twenty native XCUIScreen captures are available in `.impeccable/review`, with provenance in `capture-info.json`. Capture availability does not establish visual approval. Physical viewport stability as Chinese grows, and real translation latency, remain device checks.",
+    "keyCharacteristics": [
+      "Chinese leads; English remains a readable supporting line.",
+      "Open reading rows use space rather than enclosing cards.",
+      "Essential recording controls stay in the safe area.",
+      "Native controls adapt to appearance and Dynamic Type.",
+      "Caption replacement retains stable identity and respects manual review."
+    ],
+    "rules": [
+      {
+        "name": "The Readable Secondary Rule",
+        "body": "Supporting English must remain readable in both appearances; do not reduce its contrast to make Chinese appear more prominent.",
+        "section": "colors"
+      },
+      {
+        "name": "The Glance Order Rule",
+        "body": "Maintain the English-above, Chinese-below, timestamp-last reading order while giving Chinese the strongest text hierarchy.",
+        "section": "typography"
+      },
+      {
+        "name": "The Stable Reading Rule",
+        "body": "Retain caption UUIDs and omit replacement animations. Suspend follow for manual review, and expose return-to-latest. Check on device how growing Chinese rows affect the viewport; stable identity alone does not guarantee a fixed reading position.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "**Do** use native SwiftUI text styles and verify both appearance modes and accessibility Dynamic Type.",
+      "**Do** keep Chinese primary, English readable, and timestamps quiet in the shared caption component.",
+      "**Do** use the shared reading gutters and maximum measure, with recording controls inside safe-area insets.",
+      "**Do** retain stable caption UUIDs and respect suspended follow during manual review; check growing Chinese rows on device.",
+      "**Do** use native navigation, forms, SF Symbols, sheets, and system materials."
+    ],
+    "donts": [
+      "**Don't** introduce transcript cards, waveform dashboards, loud recording effects, or per-caption translation source badges.",
+      "**Don't** animate local-to-final caption replacement or force scrolling while the user reads earlier captions.",
+      "**Don't** freeze Dynamic Type into fixed font sizes or substitute old screenshots for the current adaptive palette.",
+      "**Don't** truncate essential recording labels at accessibility sizes; allow the control shelf to stack.",
+      "**Don't** treat browser sidecar examples or synthesized tonal ramps as production native tokens or visual verification."
+    ]
+  }
+}

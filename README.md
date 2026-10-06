@@ -75,7 +75,7 @@ node scripts/analyze-diagnostics.mjs "C:\path\diagnostics.jsonl"
 
 ## 构建与结构
 
-Windows 修改后提交即可触发 CI。CI 使用 `macos-26`、Xcode 26.5、XcodeGen 2.46.0；先运行 `swift test`，再编译真机 arm64 App，生成未签名 IPA。Apple 证书和 OpenAI Key 都不需要上传到 CI。私有仓库使用你的 Actions 额度，详见 [GitHub runner 说明](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。
+Windows 修改后提交即可触发 CI。CI 使用 `macos-26`、Xcode 26.5、XcodeGen 2.46.0；先编译 Release 真机 arm64 App，再运行 `swift test` 和全新 iPhone/iPad 模拟器使用流程测试，生成未签名 IPA 与原生截图。Apple 证书和 OpenAI Key 都不需要上传到 CI。私有仓库使用你的 Actions 额度，详见 [GitHub runner 说明](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。
 
 有 Mac 时：
 
@@ -83,4 +83,4 @@ Windows 修改后提交即可触发 CI。CI 使用 `macos-26`、Xcode 26.5、Xco
 bash scripts/build-ios.sh
 ```
 
-`WLCore`：Foundation 模型、final 意群缓冲、JSONL 恢复、导出、SSE 及可注入测试传输的独立翻译 worker；`WLAppleAudio`：可在 macOS XCTest 验证的 PCM 重采样、时间轴、录音电平和 CAF 写入；`App`：音频、Speech、Keychain、最小 SwiftUI。重要决定与当前限制在 [技术决定](docs/TECHNICAL-DECISIONS.md)。
+`WLCore`：Foundation 模型、final 意群缓冲、JSONL 恢复、导出、SSE 及可注入测试传输的独立翻译 worker；`WLAppleAudio`：可在 macOS XCTest 验证的 PCM 重采样、时间轴、录音电平和 CAF 写入；`App`：音频、Speech、Keychain 与 SwiftUI 录课、记录、回放、导出和设置。V1 交付范围与真机复测顺序见 [使用流程审查](docs/V1-RELEASE-REVIEW.md)，重要决定与当前限制在 [技术决定](docs/TECHNICAL-DECISIONS.md)。
