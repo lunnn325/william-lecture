@@ -178,6 +178,10 @@ struct LessonDetailView: View {
         .onReceive(controller.processing.$change) { _ in Task { await load() } }
         .onReceive(controller.lookup.$selection) { selected in if selected == nil { Task { await load() } } }
         .onDisappear { controller.lookup.close(owner: lookupOwner); playback.stop() }
+        .onChange(of: tab) { _, _ in controller.lookup.close(owner: lookupOwner) }
+        .onChange(of: page) { _, _ in controller.lookup.close(owner: lookupOwner) }
+        .onChange(of: original) { _, _ in controller.lookup.close(owner: lookupOwner) }
+        .onChange(of: markedOnly) { _, _ in controller.lookup.close(owner: lookupOwner) }
         .onChange(of: controller.active) { _, active in if active { playback.stop() } }
         .onChange(of: controller.libraryMutation) { _, id in if id == session.id { controller.lookup.close(owner: lookupOwner); playback.invalidateAudio() } }
     }

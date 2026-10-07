@@ -163,9 +163,10 @@ import UIKit
         let position = english.frame.minY
         // First word of the second visible sentence, not the first/latest row.
         english.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 10, dy: 9)).press(forDuration: 1)
-        XCTAssertTrue(app.buttons["解释"].waitForExistence(timeout: 5))
+        let explain = app.menuItems["解释"]
+        XCTAssertTrue(explain.waitForExistence(timeout: 5))
         XCTAssertFalse(app.textViews["note-text"].exists)
-        app.buttons["解释"].tap()
+        explain.tap()
         let term = app.staticTexts["lookup-term"]
         XCTAssertTrue(term.waitForExistence(timeout: 5)); XCTAssertEqual(term.label, "We")
         let result = app.staticTexts["lookup-result"]

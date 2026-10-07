@@ -220,6 +220,7 @@ import WLCore
         guard let view = textView, let parent = view.lookupViewController, presented == nil else { return }
         if UIDevice.current.userInterfaceIdiom == .pad {
             controller.modalPresentationStyle = .popover
+            if resultSheet { controller.preferredContentSize = CGSize(width: 360, height: 360) }
             controller.popoverPresentationController?.sourceView = view
             controller.popoverPresentationController?.sourceRect = anchor
             controller.popoverPresentationController?.permittedArrowDirections = [.up, .down]
