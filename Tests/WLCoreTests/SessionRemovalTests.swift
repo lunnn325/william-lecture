@@ -53,6 +53,8 @@ final class SessionRemovalTests: XCTestCase {
         let (root, store, session, segment) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let note = LectureNote(segmentID: segment.id, offset: 2, text: "Review this")
         try await store.saveNote(note, session: session.id)
+        let savedNotes = try await store.notes(session.id)
+        let noteJournal = try Data(contentsOf: store.folder(session.id).appendingPathComponent("notes.jsonl"))
         let entry = UsageEntry(scope: .live, model: "test"); try await store.reserveUsage(entry, session: session.id)
         var document = LessonContent(sessionID: session.id, segments: [segment]); document.state = .completed
         document.overview = "社会成本"; document.outline = [StudyNode(id: "cost", title: "社会成本", segmentIDs: [segment.id])]
@@ -69,7 +71,8 @@ final class SessionRemovalTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: originalExport.path)); XCTAssertTrue(FileManager.default.fileExists(atPath: external.path))
         XCTAssertEqual(try Data(contentsOf: store.folder(session.id).appendingPathComponent("transcript.jsonl")), transcript)
         let notes = try await store.notes(session.id), entries = try await store.usageEntries(session.id)
-        XCTAssertEqual(notes, [note]); XCTAssertEqual(entries.first?.id, entry.id)
+        XCTAssertEqual(notes, savedNotes); XCTAssertEqual(entries.first?.id, entry.id)
+        XCTAssertEqual(try Data(contentsOf: store.folder(session.id).appendingPathComponent("notes.jsonl")), noteJournal)
         let content = try await store.content(session.id); XCTAssertEqual(content?.outline, document.outline)
         let offsets = try await store.audioOffsets(session.id); XCTAssertTrue(offsets.isEmpty)
         await rejects { _ = try await store.exportDirectory(session.id, audio: true) }
