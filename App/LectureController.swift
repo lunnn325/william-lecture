@@ -44,6 +44,18 @@ import WLAppleAudio
     @Published var locale = UserDefaults.standard.string(forKey: "speechLocale") ?? "en-AU"
     let store: SessionStore
     lazy var processing = LessonProcessingCoordinator(store: store)
+    lazy var lookup = WordLookupCoordinator(store: store, configuration: { [weak self] in
+        guard let self else { return TranslatorConfiguration(mock: true, model: "", key: nil) }
+        return TranslatorConfiguration(mock: self.mode == .mock || self.lookupMock, model: self.model, key: Keychain.load())
+    }, recordingState: { [weak self] in self?.session?.state }, busy: { [weak self] in
+        guard let self else { return true }; return self.busy || self.starting || self.stopping
+    }, course: { [weak self] in self?.course ?? "" }, mock: { [weak self] in self?.lookupMock ?? true })
+    private var lookupMock: Bool {
+        #if DEBUG
+        if isUIFixture { return true }
+        #endif
+        return false
+    }
     private var warmedSpeech: SpeechService?
     private var recorder: AudioRecorder?
     private var speech: SpeechService?
@@ -135,6 +147,7 @@ import WLAppleAudio
     }
     func start() async {
         guard !busy, !active else { return }; busy = true; starting = true; defer { busy = false; starting = false }
+        lookup.prepareForRecording()
         #if DEBUG
         if isUIFixture { await startUIFixture(); return }
         #endif
@@ -183,6 +196,7 @@ import WLAppleAudio
     }
     func pauseOrResume() async {
         guard !busy, active else { return }; busy = true; defer { busy = false }
+        if !recording { lookup.prepareForRecording() }
         #if DEBUG
         if isUIFixture { session?.state = recording ? .paused : .recording; if let session { try? await store.save(session) }; return }
         #endif
@@ -203,6 +217,7 @@ import WLAppleAudio
     }
     func stop() async {
         guard !busy, active else { return }; busy = true; stopping = true; defer { busy = false; stopping = false }
+        lookup.close()
         #if DEBUG
         if isUIFixture { session?.state = .stopped; session?.stoppedAt = Date(); if let session { try? await store.save(session) }; await refreshHistory(); return }
         #endif
@@ -429,6 +444,7 @@ import WLAppleAudio
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         if course != String(name.prefix(80)) {
+            lookup.close()
             session = nil; visible = []; currentChinese = ""; volatileEnglish = ""; sessionNotes = []; latestCaptionUpdate = nil
         }
         course = String(name.prefix(80))
@@ -575,7 +591,7 @@ import WLAppleAudio
         processing.setForeground(value)
         guard foreground != value else { return }
         foreground = value; localWorker?.setForeground(value)
-        if !value { invalidateDraft() }
+        if !value { lookup.close(); invalidateDraft() }
         else {
             focusedCaptionID = visible.last?.id
             // A result completed in the background was never actually displayed there.

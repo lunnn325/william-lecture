@@ -16,7 +16,7 @@ import UIKit
         app.buttons["lesson-menu"].tap(); app.buttons["清理录音"].tap()
         XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 5)); app.alerts.buttons["清理录音"].tap()
         XCTAssertTrue(app.staticTexts["audio-cleared"].waitForExistence(timeout: 10)); XCTAssertFalse(play.exists)
-        XCTAssertTrue(app.staticTexts["caption-english-20000000-0000-0000-0000-000000000001"].exists)
+        XCTAssertTrue(app.textViews["caption-english-20000000-0000-0000-0000-000000000001"].exists)
         capture(app, "audio-cleared-detail")
         app.buttons["导出课堂"].tap(); app.buttons["生成导出文件"].tap()
         XCTAssertTrue(app.buttons["分享 / 保存到文件"].waitForExistence(timeout: 40)); app.buttons["完成"].tap()
@@ -43,7 +43,7 @@ import UIKit
         let oldID = "20000000-0000-0000-0000-000000000017"
         let latestID = "20000000-0000-0000-0000-000000000018"
         if app.images["caption-mark-\(latestID)"].exists { app.buttons["add-note"].tap() }
-        let old = app.staticTexts["caption-english-\(oldID)"]
+        let old = app.staticTexts["caption-chinese-\(oldID)"]
         if !old.isHittable { app.scrollViews["caption-scroll"].swipeDown() }
         XCTAssertTrue(old.isHittable); old.tap()
         app.buttons["add-note"].tap()
@@ -85,13 +85,13 @@ import UIKit
         XCTAssertTrue(app.buttons["summary-source-cost"].waitForExistence(timeout: 5))
         capture(app, "summary")
         app.buttons["summary-source-cost"].tap()
-        XCTAssertTrue(app.staticTexts["caption-english-20000000-0000-0000-0000-000000000002"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textViews["caption-english-20000000-0000-0000-0000-000000000002"].waitForExistence(timeout: 5))
         for _ in 0..<3 where !app.buttons["思维导图"].isHittable { app.swipeDown() }
         app.buttons["思维导图"].tap()
         XCTAssertTrue(app.buttons["map-source-cost"].waitForExistence(timeout: 5))
         capture(app, "mind-map")
         app.buttons["map-source-cost"].tap()
-        XCTAssertTrue(app.staticTexts["caption-english-20000000-0000-0000-0000-000000000002"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textViews["caption-english-20000000-0000-0000-0000-000000000002"].waitForExistence(timeout: 5))
         app.buttons["导出课堂"].tap()
         enableSwitch("整节录音 · M4A", app: app); enableSwitch("诊断文件", app: app)
         app.buttons["生成导出文件"].tap()
@@ -130,10 +130,10 @@ import UIKit
         XCTAssertTrue(app.buttons["pause-recording"].waitForExistence(timeout: 20))
         let ids = ["20000000-0000-0000-0000-000000000017", "20000000-0000-0000-0000-000000000016"]
         for (index, id) in ids.enumerated() {
-            let row = app.staticTexts["caption-english-\(id)"]
+            let row = app.staticTexts["caption-chinese-\(id)"]
             for _ in 0..<5 where !row.isHittable { app.scrollViews["caption-scroll"].swipeDown() }
             XCTAssertTrue(row.isHittable)
-            let source = row.label
+            let source = app.textViews["caption-english-\(id)"].label
             row.press(forDuration: 0.8)
             let noteSource = app.staticTexts["note-source"]
             XCTAssertTrue(noteSource.waitForExistence(timeout: 5)); XCTAssertEqual(noteSource.label, source)
@@ -153,6 +153,34 @@ import UIKit
             XCTAssertTrue(marker.waitForExistence(timeout: 5))
         }
     }
+    func testEnglishSelectionUsesActualWordWithoutOpeningNotesOrFollowingNewCaption() {
+        let app = launch(active: true, extra: ["--wl-lookup-arrival"])
+        let id = "20000000-0000-0000-0000-000000000017"
+        let english = app.textViews["caption-english-\(id)"]
+        let scroll = app.scrollViews["caption-scroll"]
+        for _ in 0..<4 where !english.isHittable { scroll.swipeDown() }
+        XCTAssertTrue(english.isHittable)
+        let position = english.frame.minY
+        // First word of the second visible sentence, not the first/latest row.
+        english.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 10, dy: 9)).press(forDuration: 1)
+        XCTAssertTrue(app.buttons["解释"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.textViews["note-text"].exists)
+        app.buttons["解释"].tap()
+        let term = app.staticTexts["lookup-term"]
+        XCTAssertTrue(term.waitForExistence(timeout: 5)); XCTAssertEqual(term.label, "We")
+        let result = app.staticTexts["lookup-result"]
+        XCTAssertTrue(result.waitForExistence(timeout: 5)); XCTAssertTrue(result.label.contains("[MOCK] We"))
+        capture(app, "native-word-explanation")
+        app.buttons["完成"].tap()
+        XCTAssertTrue(app.buttons["follow-latest"].waitForExistence(timeout: 5))
+        XCTAssertEqual(english.frame.minY, position, accuracy: 16, "Closing lookup must retain the reading position")
+        let latest = app.textViews["caption-english-20000000-0000-0000-0000-000000000019"]
+        for _ in 0..<5 where !latest.isHittable { scroll.swipeUp() }
+        XCTAssertTrue(latest.isHittable, "Other captions must continue arriving during lookup")
+        XCTAssertFalse(app.textViews["note-text"].exists)
+        app.buttons["pause-recording"].tap()
+        XCTAssertTrue(app.staticTexts["已暂停"].waitForExistence(timeout: 5))
+    }
     func testNewCaptionsCanBeReachedByScrollingWithoutArrow() {
         let app = launch(active: true, extra: ["--wl-live-arrival"])
         XCTAssertTrue(app.buttons["pause-recording"].waitForExistence(timeout: 20))
@@ -160,7 +188,7 @@ import UIKit
         scroll.swipeDown(); scroll.swipeDown()
         XCTAssertTrue(app.buttons["follow-latest"].waitForExistence(timeout: 5))
         app.buttons["fixture-append-caption"].tap()
-        let newest = app.staticTexts["caption-english-20000000-0000-0000-0000-000000000019"]
+        let newest = app.textViews["caption-english-20000000-0000-0000-0000-000000000019"]
         for _ in 0..<8 where !newest.isHittable { scroll.swipeUp() }
         scroll.swipeUp()
         XCTAssertTrue(newest.isHittable, "New rows must be in the scroll view while following is suspended")
@@ -224,7 +252,7 @@ import UIKit
     }
     private func waitForLatestCaption(_ app: XCUIApplication) {
         let suffix = "20000000-0000-0000-0000-000000000018"
-        let english = app.staticTexts["caption-english-\(suffix)"]
+        let english = app.textViews["caption-english-\(suffix)"]
         let chinese = app.staticTexts["caption-chinese-\(suffix)"]
         let timestamp = app.staticTexts["caption-time-\(suffix)"]
         let timer = app.staticTexts["recording-time"]

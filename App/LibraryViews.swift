@@ -60,6 +60,7 @@ struct LessonDetailView: View {
     @State private var notes: [LectureNote] = []
     @State private var document: LessonContent?
     @State private var totals = UsageTotals([])
+    @State private var lookupOwner = UUID()
     @State private var page = 0
     @State private var markedOnly = false
     @State private var original = false
@@ -175,9 +176,10 @@ struct LessonDetailView: View {
             catch { self.error = error.localizedDescription }
         }
         .onReceive(controller.processing.$change) { _ in Task { await load() } }
-        .onDisappear { playback.stop() }
+        .onReceive(controller.lookup.$selection) { selected in if selected == nil { Task { await load() } } }
+        .onDisappear { controller.lookup.close(owner: lookupOwner); playback.stop() }
         .onChange(of: controller.active) { _, active in if active { playback.stop() } }
-        .onChange(of: controller.libraryMutation) { _, id in if id == session.id { playback.invalidateAudio() } }
+        .onChange(of: controller.libraryMutation) { _, id in if id == session.id { controller.lookup.close(owner: lookupOwner); playback.invalidateAudio() } }
     }
     private var metadata: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -192,7 +194,7 @@ struct LessonDetailView: View {
                     Text(totals.total == 0 ? "用量未返回" : "\(totals.total.formatted()) tokens\(totals.unknown > 0 ? " · 部分用量未返回" : "")").font(.caption).foregroundStyle(Color.williamSecondary)
                 }.buttonStyle(.plain)
                 if showUsage {
-                    if totals.total > 0 { Text("已返回统计：输入 \(totals.input) · 输出 \(totals.output)\n实时 \(totals.live) · 课后 \(totals.postLesson)").font(.caption).foregroundStyle(Color.williamSecondary) }
+                    if totals.total > 0 { Text("已返回统计：输入 \(totals.input) · 输出 \(totals.output)\n实时 \(totals.live) · 课后 \(totals.postLesson) · 查词 \(totals.lookup)").font(.caption).foregroundStyle(Color.williamSecondary) }
                     if totals.unknown > 0 { Text("\(totals.unknown) 次请求的用量未返回").font(.caption).foregroundStyle(Color.williamSecondary) }
                 }
             }
@@ -289,19 +291,17 @@ struct LessonDetailView: View {
         let terminal = document.map { !$0.state.automatic } ?? true
         return VStack(alignment: .leading, spacing: 8) {
             CaptionTextView(caption: WorkspaceCaption(segment, chinese: chinese, english: correction?.english,
-                phase: chinese == nil && terminal ? .failed : nil), marked: marked)
+                phase: chinese == nil && terminal ? .failed : nil), marked: marked,
+                lookup: controller.lookup, lookupOwner: lookupOwner, lookupSession: session.id, lookupCourse: session.course,
+                onMark: { Task {
+                    var note = notes.first { $0.segmentID == segment.id } ?? LectureNote(segmentID: segment.id, offset: segment.start, english: segment.english, marked: false)
+                    note.marked.toggle(); _ = await controller.writeNote(note, session: session.id); await load()
+                } }, onNote: { controller.lookup.close(owner: lookupOwner); edit(segment) }, detail: true,
+                onPlay: { playback.seek(to: segment.start, resume: true) }, playEnabled: !controller.active && playback.ready,
+                beforePronunciation: { playback.pause() })
             if let note = notes.first(where: { $0.segmentID == segment.id }), !note.text.isEmpty {
                 Text(note.text).font(.footnote).foregroundStyle(Color.williamSecondary)
             }
-        }.contextMenu {
-            Button("从这里播放", systemImage: "play") { playback.seek(to: segment.start, resume: true) }.disabled(controller.active || !playback.ready)
-            Button("笔记", systemImage: "square.and.pencil") { edit(segment) }
-            Button("标记 / 取消标记", systemImage: "bookmark") { Task {
-                var note = notes.first { $0.segmentID == segment.id } ?? LectureNote(segmentID: segment.id, offset: segment.start, english: segment.english, marked: false)
-                note.marked.toggle(); _ = await controller.writeNote(note, session: session.id); await load()
-            } }
-            Button("复制英文", systemImage: "doc.on.doc") { UIPasteboard.general.string = correction?.english ?? segment.english }
-            if let chinese { Button("复制中文", systemImage: "doc.on.doc") { UIPasteboard.general.string = chinese } }
         }
     }
     private func jump(_ ids: [UUID]) {

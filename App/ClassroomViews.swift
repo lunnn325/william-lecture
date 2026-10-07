@@ -41,19 +41,55 @@ struct LectureRootView: View {
 struct CaptionTextView: View {
     let caption: WorkspaceCaption
     var marked = false
+    @ObservedObject var lookup: WordLookupCoordinator
+    let lookupOwner: UUID
+    let lookupSession: UUID
+    let lookupCourse: String
+    var onLookupStart: () -> Void = {}
+    var onSelect: () -> Void = {}
+    var onMark: () -> Void = {}
+    var onNote: () -> Void = {}
+    var onPressing: () -> Void = {}
+    var detail = false
+    var onPlay: () -> Void = {}
+    var playEnabled = false
+    var beforePronunciation: (() -> Void)?
     @ScaledMetric(relativeTo: .body) private var chineseSize = 22.0
     @ScaledMetric(relativeTo: .body) private var englishSize = 17.0
-    private var missingChinese: String {
-        "…"
-    }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(caption.english).font(.system(size: englishSize)).lineSpacing(4).foregroundStyle(Color.williamSecondary).fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("caption-english-\(caption.id.uuidString)")
+            HStack(alignment: .top, spacing: 12) {
+                LookupEnglishText(lookup: lookup, owner: lookupOwner, session: lookupSession,
+                    course: lookupCourse, caption: caption, fontSize: CGFloat(englishSize), onFocus: onLookupStart,
+                    beforePronunciation: beforePronunciation)
                 if marked { Image(systemName: "bookmark.fill").font(.caption).foregroundStyle(.tint).accessibilityLabel("已标记").accessibilityIdentifier("caption-mark-\(caption.id.uuidString)") }
             }
-            Text(caption.chinese ?? missingChinese)
+            if lookup.owner == lookupOwner && lookup.focusedCaption == caption.id && !lookup.message.isEmpty {
+                Text(lookup.message).font(.caption).foregroundStyle(Color.williamSecondary).accessibilityIdentifier("lookup-feedback")
+            }
+            if detail {
+                sentence.contentShape(Rectangle()).contextMenu {
+                    Button("从这里播放", systemImage: "play", action: onPlay).disabled(!playEnabled)
+                    Button("笔记", systemImage: "square.and.pencil", action: onNote)
+                    Button("标记 / 取消标记", systemImage: "bookmark", action: onMark)
+                    Button("复制英文", systemImage: "doc.on.doc") { UIPasteboard.general.string = caption.english }
+                    if let chinese = caption.chinese { Button("复制中文", systemImage: "doc.on.doc") { UIPasteboard.general.string = chinese } }
+                }
+            } else {
+                sentence.contentShape(Rectangle())
+                .onLongPressGesture(minimumDuration: 0.5, perform: onNote, onPressingChanged: { if $0 { onPressing() } })
+                .simultaneousGesture(TapGesture(count: 2).exclusively(before: TapGesture()).onEnded { tap in
+                    onSelect(); if case .first = tap { onMark() }
+                })
+            }
+        }
+        .padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("caption-\(caption.id.uuidString)")
+    }
+    private var sentence: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(caption.chinese ?? "…")
                 .font(caption.chinese == nil ? .footnote : .system(size: chineseSize, weight: .regular)).lineSpacing(6)
                 .foregroundStyle(caption.chinese == nil ? Color.williamSecondary : Color.primary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -61,10 +97,7 @@ struct CaptionTextView: View {
             Text(SessionStore.readingTime(caption.start)).font(.caption2).monospacedDigit().foregroundStyle(Color.williamSecondary)
                 .accessibilityIdentifier("caption-time-\(caption.id.uuidString)")
         }
-        .padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("caption-\(caption.id.uuidString)")
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -72,6 +105,10 @@ struct WorkspaceView: View {
     @EnvironmentObject private var controller: LectureController
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var feed = CaptionFeed()
+    @State private var lookupOwner = UUID()
+    #if DEBUG
+    @State private var fixtureLookupScheduled = false
+    #endif
     @State private var nearBottom = true
     @State private var readerDragged = false
     @State private var scrollIsIdle = true
@@ -127,12 +164,12 @@ struct WorkspaceView: View {
                         .onScrollGeometryChange(for: CGSize.self) { $0.containerSize } action: { _, size in viewportSize = size }
                         .task(id: viewportSize) {
                             let sessionID = controller.session?.id
-                            guard feed.following, viewportSize != .zero else { return }
+                            guard !controller.lookup.isInteracting, feed.following, viewportSize != .zero else { return }
                             // Rotation changes the lazy stack's measured heights across several layouts.
                             // Re-anchor after it settles; cancellation prevents a prior resize or reader
                             // gesture from dragging the viewport back to the end.
                             do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
-                            guard !Task.isCancelled, feed.following, controller.session?.id == sessionID else { return }
+                            guard !Task.isCancelled, !controller.lookup.isInteracting, feed.following, controller.session?.id == sessionID else { return }
                             proxy.scrollTo("caption-bottom", anchor: .bottom)
                         }
                         .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -140,7 +177,7 @@ struct WorkspaceView: View {
                         } action: { _, value in nearBottom = value; resumeIfAtBottom(proxy) }
                         .onScrollPhaseChange { _, phase in
                             scrollIsIdle = phase == .idle
-                            if phase == .interacting { readerDragged = true; feed.suspend() }
+                            if phase == .interacting { controller.lookup.readerScrolled(owner: lookupOwner); readerDragged = true; feed.suspend() }
                             // Layout/geometry may arrive after the idle event. Keep the
                             // drag intent until either callback observes the visible end.
                             resumeIfAtBottom(proxy)
@@ -174,7 +211,7 @@ struct WorkspaceView: View {
                             let id = controller.session?.id
                             let rows = await controller.latestWorkspaceRows()
                             guard controller.session?.id == id else { return }
-                            if paneSessionID != id { paneSessionID = id; feed = CaptionFeed(); selectedCaption = nil }
+                            if paneSessionID != id { controller.lookup.close(owner: lookupOwner); paneSessionID = id; feed = CaptionFeed(); selectedCaption = nil }
                             selectedCaption = nil; feed.resume(latest: rows); hasEarlier = (rows.first?.start ?? 0) > 0.1; follow(proxy)
                         }
                         .transaction { $0.animation = nil }
@@ -220,6 +257,7 @@ struct WorkspaceView: View {
             .navigationDestination(isPresented: $savedDetail) {
                 if let session = savedSession { LessonDetailView(session: session) }
             }
+            .onDisappear { controller.lookup.close(owner: lookupOwner) }
             .alert("结束这节课？", isPresented: $confirmStop) {
                 Button("继续录课", role: .cancel) {}
                 Button("结束并保存") { Task {
@@ -319,22 +357,23 @@ struct WorkspaceView: View {
             noteContext = NoteContext(sessionID: session.id, note: note)
     }
     private func captionRow(_ caption: WorkspaceCaption) -> some View {
-        CaptionTextView(caption: caption, marked: controller.note(for: caption.id)?.marked == true)
+        CaptionTextView(caption: caption, marked: controller.note(for: caption.id)?.marked == true,
+            lookup: controller.lookup, lookupOwner: lookupOwner, lookupSession: controller.session?.id ?? lookupOwner, lookupCourse: controller.course,
+            onLookupStart: {
+                readerDragged = false; selectedCaption = caption; feed.suspend()
+                #if DEBUG
+                if controller.isUIFixture && ProcessInfo.processInfo.arguments.contains("--wl-lookup-arrival") && !fixtureLookupScheduled {
+                    fixtureLookupScheduled = true
+                    Task { try? await Task.sleep(for: .seconds(2)); await controller.appendUIFixtureCaption() }
+                }
+                #endif
+            },
+            onSelect: { controller.lookup.close(owner: lookupOwner); readerDragged = false; selectedCaption = caption; feed.suspend() },
+            onMark: { Task { await controller.toggleMark(caption) } },
+            onNote: { controller.lookup.close(owner: lookupOwner); readerDragged = false; selectedCaption = caption; feed.suspend(); editNote(caption) },
+            onPressing: { readerDragged = false; feed.suspend() })
             .id(caption.id)
             .background(selectedCaption?.id == caption.id ? Color.williamAccent.opacity(0.04) : Color.clear)
-            .onLongPressGesture(minimumDuration: 0.5, perform: {
-                readerDragged = false; selectedCaption = caption; feed.suspend(); editNote(caption)
-            }, onPressingChanged: { pressing in
-                // Freeze at finger-down, before new partials can scroll this target
-                // away during the long-press recognition interval.
-                if pressing { readerDragged = false; feed.suspend() }
-            })
-            // Independent long-press recognition must not lose to a tap when
-            // iOS delivers the release first. Double/single taps are exclusive.
-            .simultaneousGesture(TapGesture(count: 2).exclusively(before: TapGesture()).onEnded { tap in
-                readerDragged = false; selectedCaption = caption; feed.suspend()
-                if case .first = tap { Task { await controller.toggleMark(caption) } }
-            })
             .accessibilityAction(named: "标记此句") { Task { await controller.toggleMark(caption) } }
             .accessibilityAction(named: "写笔记") { editNote(caption) }
             .accessibilityAction(named: "复制英文") { UIPasteboard.general.string = caption.english }
@@ -347,18 +386,19 @@ struct WorkspaceView: View {
         noteContext = NoteContext(sessionID: id, note: controller.note(for: caption.id) ?? LectureNote(segmentID: caption.id, offset: caption.start, english: caption.english))
     }
     private func follow(_ proxy: ScrollViewProxy) {
-        guard feed.following else { return }
-        Task { @MainActor in await Task.yield(); guard feed.following else { return }; proxy.scrollTo("caption-bottom", anchor: .bottom) }
+        guard !controller.lookup.isInteracting, feed.following else { return }
+        Task { @MainActor in await Task.yield(); guard !controller.lookup.isInteracting, feed.following else { return }; proxy.scrollTo("caption-bottom", anchor: .bottom) }
     }
     private func resumeIfAtBottom(_ proxy: ScrollViewProxy) {
-        guard readerDragged, scrollIsIdle, nearBottom, !feed.following else { return }
+        guard !controller.lookup.isInteracting, readerDragged, scrollIsIdle, nearBottom, !feed.following else { return }
         readerDragged = false
         Task { await latest(proxy, automatic: true) }
     }
     private func latest(_ proxy: ScrollViewProxy, automatic: Bool = false) async {
+        if !automatic { controller.lookup.close(owner: lookupOwner) }
         let id = controller.session?.id
         let rows = await controller.latestWorkspaceRows()
-        guard controller.session?.id == id, !automatic || (scrollIsIdle && nearBottom && !readerDragged) else { return }
+        guard controller.session?.id == id, !automatic || (!controller.lookup.isInteracting && scrollIsIdle && nearBottom && !readerDragged) else { return }
         selectedCaption = nil; readerDragged = false; feed.resume(latest: rows); hasEarlier = (rows.first?.start ?? 0) > 0.1; follow(proxy)
     }
     private func earlier() async {

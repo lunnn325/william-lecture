@@ -36,7 +36,7 @@ public struct APIResponseMetadata: Sendable {
         }
     }
 }
-public enum UsageScope: String, Codable, Sendable { case live, postLesson }
+public enum UsageScope: String, Codable, Sendable { case live, postLesson, lookup }
 public struct UsageEntry: Codable, Sendable, Identifiable {
     public var id: UUID
     public var scope: UsageScope
@@ -51,8 +51,8 @@ public struct UsageEntry: Codable, Sendable, Identifiable {
     }
 }
 public struct UsageTotals: Sendable {
-    public var live = 0, postLesson = 0, input = 0, output = 0, unknown = 0
-    public var total: Int { live + postLesson }
+    public var live = 0, postLesson = 0, lookup = 0, input = 0, output = 0, unknown = 0
+    public var total: Int { live + postLesson + lookup }
     public var chargedPostLesson = 0
     public init(_ entries: [UsageEntry]) {
         var responseIDs = Set<String>()
@@ -61,7 +61,11 @@ public struct UsageTotals: Sendable {
             if e.scope == .postLesson { chargedPostLesson += e.usage?.total ?? e.reserved }
             guard let u = e.usage else { unknown += 1; continue }
             input += u.input; output += u.output
-            if e.scope == .live { live += u.total } else { postLesson += u.total }
+            switch e.scope {
+            case .live: live += u.total
+            case .postLesson: postLesson += u.total
+            case .lookup: lookup += u.total
+            }
         }
     }
 }
