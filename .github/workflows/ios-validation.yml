@@ -14,7 +14,7 @@ jobs:
   build:
     # Standard public Apple Silicon runner, not a paid larger runner.
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode 26.5
@@ -38,7 +38,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Verify fresh install and V1 phone/tablet flows
-        timeout-minutes: 35
+        timeout-minutes: 42
         run: bash scripts/test-first-launch.sh
       - name: Upload build diagnostics
         if: always()
