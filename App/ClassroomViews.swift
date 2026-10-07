@@ -34,8 +34,29 @@ struct LectureRootView: View {
             NavigationStack { LectureSettingsView() }.tabItem { Label("设置", systemImage: "gearshape") }
         }
         .tint(.williamAccent)
-        .onChange(of: phase) { _, phase in controller.setForeground(phase == .active) }
+        .onChange(of: phase) { _, phase in
+            if phase != .inactive {
+                controller.setForeground(phase == .active)
+                if phase == .active { controller.pictureInPicture.stop() }
+            }
+        }
+        .onChange(of: pipCaption, initial: true) { _, _ in controller.syncPictureInPicture() }
     }
+    private var pipCaption: PiPCaptionState {
+        PiPCaptionState(enabled: controller.pictureInPictureEnabled, session: controller.session?.id, active: controller.active,
+            recording: controller.recording, course: controller.course, draft: controller.workspaceDraft,
+            latest: controller.visible.last, elapsed: controller.elapsed)
+    }
+}
+private struct PiPCaptionState: Equatable {
+    var enabled: Bool
+    var session: UUID?
+    var active: Bool
+    var recording: Bool
+    var course: String
+    var draft: WorkspaceCaption?
+    var latest: TranscriptSegment?
+    var elapsed: Double
 }
 
 struct CaptionTextView: View {
@@ -206,6 +227,14 @@ struct WorkspaceView: View {
                             }
                         }
                         .onChange(of: controller.visible) { _, segments in feed.merge(segments); follow(proxy) }
+                        .onChange(of: controller.foregroundRefresh) { _, refresh in
+                            let classroom = controller.session?.id, retained = Set(feed.rows.map(\.id))
+                            Task {
+                                let rows = await controller.workspaceRows(retaining: retained)
+                                guard controller.session?.id == classroom, controller.foregroundRefresh == refresh else { return }
+                                feed.merge(rows); follow(proxy)
+                            }
+                        }
                         .onChange(of: controller.workspaceDraft) { _, _ in follow(proxy) }
                         .task(id: controller.session?.id) {
                             let id = controller.session?.id
@@ -289,6 +318,15 @@ struct WorkspaceView: View {
     }
     private var controls: some View {
         VStack(spacing: 16) {
+            if controller.pictureInPictureEnabled && controller.active && controller.pictureInPicture.supported {
+                CaptionPictureInPicturePreview(coordinator: controller.pictureInPicture)
+                    .frame(width: 224, height: 126).clipShape(RoundedRectangle(cornerRadius: 10))
+                    .accessibilityHidden(true).overlay(alignment: .topTrailing) {
+                        Button { controller.pictureInPicture.start() } label: {
+                            Image(systemName: "pip.enter").foregroundStyle(.white).frame(width: 44, height: 44)
+                        }.buttonStyle(.plain).accessibilityLabel("打开字幕小窗").accessibilityIdentifier("open-caption-pip")
+                    }
+            }
             if controller.active || controller.starting || controller.stopping {
             HStack(spacing: 18) {
                 Rectangle().fill(Color.williamSecondary.opacity(0.15)).frame(height: 0.5)

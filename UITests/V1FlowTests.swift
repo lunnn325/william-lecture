@@ -3,6 +3,21 @@ import UIKit
 
 @MainActor final class V1FlowTests: XCTestCase {
     override func setUp() { super.setUp(); continueAfterFailure = false; XCUIDevice.shared.orientation = .portrait }
+    func testReturningFromBackgroundRefreshesOldFinalsAndPreservesReader() {
+        let app = launch(active: true, extra: ["--wl-background-translation"])
+        let caption = app.staticTexts["caption-chinese-20000000-0000-0000-0000-000000000017"]
+        if !caption.isHittable { app.swipeDown() }
+        XCTAssertTrue(caption.waitForExistence(timeout: 5)); caption.tap()
+        XCUIDevice.shared.press(.home)
+        // Short background visit; this fixture neither captures audio nor calls providers.
+        Thread.sleep(forTimeInterval: 2)
+        app.activate()
+        let final = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in caption.label == "[MOCK] 后台完成后的最终中文。" }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [final], timeout: 10), .completed)
+        XCTAssertTrue(caption.isHittable, "Foreground refresh must preserve the selected reading position")
+        XCTAssertTrue(app.buttons["follow-latest"].exists)
+        capture(app, "background-final-restored")
+    }
     func testLibraryCleanupPlaybackExportAndDetailDeletion() {
         let app = launch(active: false)
         let card = app.buttons["history-10000000-0000-0000-0000-000000000001"]

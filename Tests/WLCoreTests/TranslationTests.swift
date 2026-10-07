@@ -29,6 +29,20 @@ private actor TranslationProbe {
 }
 
 final class TranslationTests: XCTestCase {
+    @MainActor func testTransientQueueFailuresRecoverBeyondTwoAutomaticWakeups() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(root: root), session = LectureSession(course: "Fluctuating connection")
+        try await store.save(session); let input = segments(1)
+        try await store.append(input[0], session: session.id)
+        let probe = TranslationProbe(error: APIError(status: 429, retryAfter: 0), errorsBeforeSuccess: 9)
+        let worker = TranslationWorker(store: store, config: config, session: session, recoveryDelay: 0.005,
+            operation: { segment, delta in try await probe.translate(segment, delta: delta) })
+        let done = expectation(description: "A temporary outage does not permanently disable GPT")
+        worker.onUpdate = { if $0.status == .completed { done.fulfill() } }
+        worker.kick(); await fulfillment(of: [done], timeout: 3); await worker.waitForCancellation()
+        let observed = await probe.snapshot(); XCTAssertEqual(observed.counts[input[0].id], 10)
+        XCTAssertLessThanOrEqual(observed.maximum, 2)
+    }
     private let config = TranslatorConfiguration(mock: false, model: "test-only", key: nil)
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

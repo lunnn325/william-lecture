@@ -44,6 +44,12 @@ struct LectureSettingsView: View {
                 Button("准备英文模型") { Task { preparingSpeech = true; await controller.prepareSpeechModels(); preparingSpeech = false } }
                     .disabled(preparingSpeech || controller.active || controller.busy)
             }
+            Section("字幕小窗") {
+                Toggle("字幕小窗", isOn: $controller.pictureInPictureEnabled).accessibilityIdentifier("caption-pip-setting")
+                PictureInPictureStatus(coordinator: controller.pictureInPicture)
+                Text("录课时显示最新英中字幕，切换 App 后使用系统画中画。锁屏时小窗不可见，录音与翻译继续处理。")
+                    .font(.footnote).foregroundStyle(Color.williamSecondary)
+            }
             Section("OpenAI 最终翻译") {
                 Text(keySaved || Keychain.load() != nil ? "API Key 已保存在本机" : "尚未配置 API Key")
                 SecureField("输入新 Key，留空保留原 Key", text: $key, prompt: Text("输入新 Key，留空保留原 Key").foregroundStyle(Color.williamSecondary))
@@ -90,6 +96,11 @@ struct LectureSettingsView: View {
             keySaved = Keychain.load() != nil; key = ""; error = ""
         } else { error = controller.warning }
     }
+}
+
+private struct PictureInPictureStatus: View {
+    @ObservedObject var coordinator: CaptionPictureInPicture
+    var body: some View { Text(coordinator.status).font(.footnote).foregroundStyle(Color.williamSecondary) }
 }
 
 struct CoursePickerView: View {

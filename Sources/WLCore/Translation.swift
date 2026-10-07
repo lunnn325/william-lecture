@@ -163,8 +163,18 @@ public final class Translator: @unchecked Sendable {
     }
     public func networkRestored() {
         guard !manuallyCancelled else { return }
-        if suspended && automaticRetryAllowed { kick(force: true) }
+        if suspended && automaticRetryAllowed { automaticWakeCount = 0; kick(force: true) }
         else if !suspended { kick() }
+    }
+    public func resumeAfterForeground() async {
+        guard !manuallyCancelled, !suspended || automaticRetryAllowed else { return }
+        do { try await store.requeueIncompleteGPT(session.id) }
+        catch { onState?("翻译队列：\(error.localizedDescription)"); return }
+        guard !manuallyCancelled else { return }
+        // Timers may have slept along with the app; don't retain expired exclusions.
+        retryAfter = retryAfter.filter { $0.value > Date() }
+        scheduleSegmentRetry(); networkRestored()
+        record(Diagnostic("translation_foreground_resume"))
     }
     public func flushDiagnostics() async { await diagnosticWrites?.value }
     public func waitForCancellation() async {
@@ -180,7 +190,14 @@ public final class Translator: @unchecked Sendable {
                 try Task.checkCancellation()
                 guard let segment = try await store.pending(session.id, limit: 1,
                     excluding: Set(requests.keys).union(retryAfter.keys), newestFirst: newestNext).first else {
-                    if requests.isEmpty && retryAfter.isEmpty { onState?("翻译已跟上") }
+                    if requests.isEmpty && retryAfter.isEmpty {
+                        let gaps = try await store.translationGaps(session.id)
+                        guard !Task.isCancelled, !suspended, requests.isEmpty else { return }
+                        if gaps.gpt > 0 { onState?("\(gaps.gpt) 段最终翻译待补齐") }
+                        else if gaps.local > 0 { onState?("GPT 已完成；\(gaps.local) 段本机中文待补齐") }
+                        else { onState?("翻译已跟上") }
+                        record(Diagnostic("translation_queue_idle", fields: ["gpt_missing": "\(gaps.gpt)", "local_missing": "\(gaps.local)"]))
+                    }
                     return
                 }
                 // An actor hop can allow cancellation or another request to finish.
@@ -302,9 +319,9 @@ public final class Translator: @unchecked Sendable {
         }
     }
     private func scheduleRecovery() {
-        guard retryWake == nil, automaticWakeCount < 2, !manuallyCancelled else { return }
-        automaticWakeCount += 1
-        let delay = recoveryDelay
+        guard retryWake == nil, !manuallyCancelled else { return }
+        let delay = min(300, recoveryDelay * pow(2, Double(min(automaticWakeCount, 4))))
+        automaticWakeCount = min(4, automaticWakeCount + 1)
         retryWake = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(delay)) } catch { return }
             guard let self, !manuallyCancelled else { return }

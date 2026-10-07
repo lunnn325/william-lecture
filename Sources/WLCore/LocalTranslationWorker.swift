@@ -37,6 +37,8 @@ public enum LocalProviderFailure: Error, LocalizedError, Sendable, Equatable {
     private var newestStable = true
     private var foreground = true
     private var disabled = false
+    private var stopped = false
+    private var retryWake: Task<Void, Never>?
     private var recovering = false
     private var wakeRequested = false
     public var resourceCounts: (running: Int, pendingDraft: Int) { (running == nil ? 0 : 1, pendingDraft == nil ? 0 : 1) }
@@ -49,11 +51,11 @@ public enum LocalProviderFailure: Error, LocalizedError, Sendable, Equatable {
         self.operation = operation; self.cancelOperation = cancelOperation; self.mock = mock
     }
     public func offer(_ request: DraftTranslationRequest) {
-        guard !disabled, foreground, request.sessionID == session else { return }
+        guard !disabled, request.sessionID == session else { return }
         if let lastDraft, lastDraft.captionID == request.captionID, lastDraft.epoch == request.epoch,
            lastDraft.revision == request.revision, lastDraft.english == request.english { return }
         pendingDraft = request
-        if draftReadyAt == nil { draftReadyAt = max(Date().addingTimeInterval(draftDelay), lastDraftAt.addingTimeInterval(draftInterval)) }
+        if draftReadyAt == nil { draftReadyAt = max(Date().addingTimeInterval(draftDelay), lastDraftAt.addingTimeInterval(foreground ? draftInterval : max(1, draftInterval))) }
         // Do not reset this timer for every revision: continuous speech must not starve drafts.
         if draftTimer == nil, let ready = draftReadyAt {
             draftTimer = Task { [weak self] in
@@ -66,8 +68,24 @@ public enum LocalProviderFailure: Error, LocalizedError, Sendable, Equatable {
     public func clearDraft() { pendingDraft = nil; draftReadyAt = nil; draftTimer?.cancel(); draftTimer = nil }
     public func setForeground(_ foreground: Bool) {
         self.foreground = foreground
-        if !foreground { clearDraft() }
         kick()
+    }
+    public func resumeAfterForeground() async {
+        guard !stopped else { return }
+        retryWake?.cancel(); retryWake = nil
+        do {
+            try await store.resetLocalFailures(session, excluding: Set(activeStable.map { [$0.id] } ?? []))
+            guard !stopped else { return }
+            disabled = false; lastDraft = nil; kick()
+        } catch { if !stopped { onState?("本机翻译队列：\(error.localizedDescription)") } }
+    }
+    private func scheduleRecovery() {
+        guard !stopped, retryWake == nil else { return }
+        retryWake = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            guard let self, !stopped else { return }
+            retryWake = nil; await resumeAfterForeground()
+        }
     }
     public func kick() {
         guard !disabled else { return }
@@ -78,7 +96,7 @@ public enum LocalProviderFailure: Error, LocalizedError, Sendable, Equatable {
             do {
                 let stable = try await store.localPending(session, newestFirst: newestStable)
                 guard !disabled, !Task.isCancelled, running == nil, !recovering else { pump = nil; return }
-                let readyDraft = foreground && pendingDraft != nil && (draftReadyAt?.timeIntervalSinceNow ?? 1) <= 0
+                let readyDraft = pendingDraft != nil && (draftReadyAt?.timeIntervalSinceNow ?? 1) <= 0
                 if readyDraft && (wantsDraft || stable == nil), let draft = pendingDraft {
                     clearDraft(); lastDraft = draft; lastDraftAt = Date(); wantsDraft = false
                     start(draft: draft, stable: nil, request: UUID())
@@ -134,7 +152,10 @@ public enum LocalProviderFailure: Error, LocalizedError, Sendable, Equatable {
                     if let stable, let merged = try? await store.applyLocal(stable, session: session, request: request,
                         chinese: nil, at: Date(), error: error.localizedDescription) { onUpdate?(merged) }
                     // An ambiguous or empty fragment must not disable the provider for the lecture.
-                    if let failure = error as? LocalProviderFailure, failure == .unavailable { disabled = true; clearDraft() }
+                    if let failure = error as? LocalProviderFailure {
+                        if failure == .unavailable { disabled = true; clearDraft() }
+                        scheduleRecovery()
+                    }
                     onState?("本机翻译未完成：\(error.localizedDescription)；录音/GPT 继续")
                     var errorFields = fields; errorFields["error"] = error.localizedDescription
                     record(Diagnostic("local_translation_error", offset: offset, fields: errorFields))
@@ -152,7 +173,7 @@ public enum LocalProviderFailure: Error, LocalizedError, Sendable, Equatable {
                 chinese: nil, at: Date(), error: "本机翻译超时") { onUpdate?(merged) }
             await cancelOperation()
             // running remains occupied until the underlying operation actually returns.
-            recovering = false; timeout = nil; kick()
+            recovering = false; timeout = nil; scheduleRecovery(); kick()
         }
     }
     private func translate(_ english: String) async throws -> String {
@@ -183,7 +204,8 @@ public enum LocalProviderFailure: Error, LocalizedError, Sendable, Equatable {
         kick()
     }
     public func shutdown() async {
-        disabled = true; clearDraft(); pump?.cancel(); timeout?.cancel(); running?.cancel()
+        stopped = true; disabled = true; retryWake?.cancel(); retryWake = nil
+        clearDraft(); pump?.cancel(); timeout?.cancel(); running?.cancel()
         if let source = activeStable, let request = activeID { try? await store.cancelLocal(source, session: session, request: request) }
         onDraft = nil; onUpdate = nil; onState = nil
         await cancelOperation()

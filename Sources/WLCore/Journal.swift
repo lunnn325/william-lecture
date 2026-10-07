@@ -188,12 +188,34 @@ public actor SessionStore {
         current.localRequestID = nil; current.localAttemptedRevision = nil
         _ = try commitTranslation(current, session: session)
     }
-    public func resetLocalFailures(_ session: UUID) throws {
+    public func resetLocalFailures(_ session: UUID, excluding: Set<UUID> = []) throws {
         try loadTranslationIndex(session)
-        for var current in Array(translationIndex.values) where current.localEnabled == true && current.validLocalChinese == nil && current.finalChinese == nil {
+        for var current in Array(translationIndex.values) where current.localEnabled == true && current.validLocalChinese == nil && current.finalChinese == nil && current.localRequestID == nil && !excluding.contains(current.id) && current.localAttemptedRevision != nil {
             current.localAttemptedRevision = nil; current.localRequestID = nil; current.localError = nil
             _ = try commitTranslation(current, session: session)
         }
+    }
+    /// A foreground refresh includes already loaded older rows; completed callbacks
+    /// can be coalesced while SwiftUI is offscreen. This is not a new caption revision.
+    public func workspaceSnapshot(_ session: UUID, retaining: Set<UUID> = [], latest: Int = 180) throws -> [TranscriptSegment] {
+        try loadTranslationIndex(session)
+        let ordered = translationIndex.values.sorted { $0.start == $1.start ? $0.id.uuidString < $1.id.uuidString : $0.start < $1.start }
+        let ids = retaining.union(ordered.suffix(max(0, latest)).map(\.id))
+        return ordered.filter { ids.contains($0.id) }
+    }
+    public func requeueIncompleteGPT(_ session: UUID) throws {
+        try loadTranslationIndex(session)
+        for var current in Array(translationIndex.values) where current.status == .failed && current.error == TranslationResponseFailure.incomplete.localizedDescription {
+            current.status = .pending; current.error = nil; current.gptRequestID = nil
+            current.chinese = nil; current.submittedAt = nil; current.completedAt = nil
+            _ = try commitTranslation(current, session: session)
+        }
+    }
+    public func translationGaps(_ session: UUID) throws -> (gpt: Int, local: Int) {
+        try loadTranslationIndex(session)
+        let values = translationIndex.values
+        return (values.filter { !$0.prefersLocalOnly && $0.finalChinese == nil && $0.status != .mock }.count,
+                values.filter { $0.prefersLocalOnly && $0.exportChinese == nil }.count)
     }
     public func markLocalDisplayed(_ source: TranscriptSegment, session: UUID, at: Date) throws {
         guard var current = try translationSnapshot(source, session: session), current.localDisplayedAt == nil else { return }

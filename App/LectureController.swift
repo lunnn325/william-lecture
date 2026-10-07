@@ -12,6 +12,19 @@ import WLAppleAudio
     @Published var history: [LectureSession] = []
     @Published var visible: [TranscriptSegment] = []
     @Published var latestCaptionUpdate: TranscriptSegment?
+    @Published private(set) var foregroundRefresh = UUID()
+    @Published var pictureInPictureEnabled = UserDefaults.standard.bool(forKey: "captionPictureInPicture") {
+        didSet { UserDefaults.standard.set(pictureInPictureEnabled, forKey: "captionPictureInPicture"); syncPictureInPicture() }
+    }
+    lazy var pictureInPicture: CaptionPictureInPicture = {
+        let value = CaptionPictureInPicture()
+        value.onSetPlaying = { [weak self] playing in
+            guard let self, active, !busy, recording != playing else { return }
+            Task { await self.pauseOrResume(); self.syncPictureInPicture() }
+        }
+        value.onDiagnostic = { [weak self] event, fields in self?.log(event, fields: fields) }
+        return value
+    }()
     @Published var sessionNotes: [LectureNote] = []
     @Published var noteBusy = false
     @Published var savedCourses = UserDefaults.standard.stringArray(forKey: "savedCourses") ?? []
@@ -70,6 +83,7 @@ import WLAppleAudio
     private var renderedRows: Set<UUID> = []
     private var displayedFinalIDs: Set<UUID> = []
     private var foreground = true
+    private var foregroundRecovery: Task<Void, Never>?
     private var buffer = SentenceBuffer()
     private var bufferFlush: Task<Void, Never>?
     private var timer: Task<Void, Never>?
@@ -195,7 +209,7 @@ import WLAppleAudio
         }
     }
     func pauseOrResume() async {
-        guard !busy, active else { return }; busy = true; defer { busy = false }
+        guard !busy, active else { return }; busy = true; defer { busy = false; syncPictureInPicture() }
         if !recording { lookup.prepareForRecording() }
         #if DEBUG
         if isUIFixture { session?.state = recording ? .paused : .recording; if let session { try? await store.save(session) }; return }
@@ -216,7 +230,7 @@ import WLAppleAudio
         if let session { try? await store.save(session) }
     }
     func stop() async {
-        guard !busy, active else { return }; busy = true; stopping = true; defer { busy = false; stopping = false }
+        guard !busy, active else { return }; busy = true; stopping = true; defer { busy = false; stopping = false; syncPictureInPicture() }
         lookup.close()
         #if DEBUG
         if isUIFixture { session?.state = .stopped; session?.stoppedAt = Date(); if let session { try? await store.save(session) }; await refreshHistory(); return }
@@ -251,6 +265,7 @@ import WLAppleAudio
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled, let self, let session = self.session else { return }
                 self.session?.duration = session.timelineOffset()
+                self.syncPictureInPicture()
             }
         }
     }
@@ -320,7 +335,7 @@ import WLAppleAudio
             if !final {
                 realtimePartial = piece
                 volatileEnglish = piece.text
-                if localEnabled && recording && foreground {
+                if localEnabled && recording {
                     drafts.replacePartial(piece); refreshDraft()
                 }
                 if Date().timeIntervalSince(lastPartialLog) >= 1 {
@@ -344,6 +359,7 @@ import WLAppleAudio
                 refreshDraft()
                 scheduleBufferFlush()
             }
+            syncPictureInPicture()
         }
     }
     private func persistSegment(_ segment: TranscriptSegment) {
@@ -352,6 +368,12 @@ import WLAppleAudio
         if localEnabled, let draft = drafts.current, draft.id == segment.id, let chinese = draft.chinese { previewChinese[segment.id] = chinese }
         var segment = drafts.freeze(segment)
         segment.localEnabled = localEnabled; segment.gptDeferred = worker == nil
+        // Known standalone fillers remain available even if the Apple model is
+        // temporarily unavailable. They never enter the GPT queue.
+        if localEnabled, segment.validLocalChinese == nil, let chinese = ShortUtterance.draft(segment.english) {
+            segment.localChinese = chinese; segment.localSourceText = segment.english; segment.localRevision = segment.sourceRevision
+            segment.localFirstAt = segment.localFirstAt ?? Date(); segment.localCompletedAt = Date()
+        }
         segment.queuedAt = Date()
         let emittedAt = segment.queuedAt!
         updateVisible(segment)
@@ -416,6 +438,7 @@ import WLAppleAudio
         let retained = Set(visible.map(\.id)).union([buffer.pendingID])
         previewChinese = previewChinese.filter { retained.contains($0.key) }
         renderedRows.formIntersection(retained); displayedFinalIDs.formIntersection(retained)
+        syncPictureInPicture()
     }
     func captionChinese(_ segment: TranscriptSegment) -> String? {
         segment.finalChinese ?? segment.validLocalChinese ?? previewChinese[segment.id] ?? segment.displayChinese
@@ -453,12 +476,17 @@ import WLAppleAudio
         UserDefaults.standard.set(savedCourses, forKey: "savedCourses")
     }
     func latestWorkspaceRows() async -> [TranscriptSegment] {
+        await workspaceRows(retaining: [])
+    }
+    func workspaceRows(retaining: Set<UUID>) async -> [TranscriptSegment] {
         guard let selected = session else { return [] }
         do {
-            let records = try await store.segments(selected.id)
+            let records = try await store.workspaceSnapshot(selected.id, retaining: retaining)
             guard session?.id == selected.id else { return [] }
-            var feed = CaptionFeed(); feed.merge(Array(records.suffix(180))); feed.merge(visible)
-            return feed.rows
+            // Merge streaming UI data without discarding older requested rows.
+            var index = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
+            for row in visible { index[row.id] = row.mergingDisplay(index[row.id] ?? row) }
+            return index.values.sorted { $0.start == $1.start ? $0.id.uuidString < $1.id.uuidString : $0.start < $1.start }
         } catch { warning = error.localizedDescription; return visible }
     }
     func note(for id: UUID) -> LectureNote? { sessionNotes.first { $0.segmentID == id } }
@@ -545,11 +573,12 @@ import WLAppleAudio
         }, cancelOperation: { if !mock { await provider.cancel() } })
         local.onDraft = { [weak self, weak local] request, text, at in
             guard let self, let local, self.localWorker === local, self.session?.id == request.sessionID,
-                  self.recording, self.foreground else { return .stale }
+                  self.recording else { return .stale }
             let accepted = self.drafts.accept(request, text: text, at: at)
             guard accepted != .stale, let draft = self.drafts.current else { return .stale }
             self.focusedCaptionID = draft.id; self.currentChinese = draft.chinese ?? self.currentChinese
-            self.localStatus = "本机中文已显示；等待稳定英文/GPT"
+            self.localStatus = "本机中文已就绪；等待稳定英文/GPT"
+            self.syncPictureInPicture()
             return accepted
         }
         local.onUpdate = { [weak self, weak local] segment in
@@ -572,7 +601,7 @@ import WLAppleAudio
             focusedCaptionID = draft.id
             if let chinese = draft.chinese { currentChinese = chinese }
             else if previous != draft.id { currentChinese = "" }
-            if recording && foreground, let id = session?.id, let request = drafts.request(session: id) { localWorker?.offer(request) }
+            if recording, let id = session?.id, let request = drafts.request(session: id) { localWorker?.offer(request) }
         } else {
             localWorker?.clearDraft()
             if let previous, focusedCaptionID == previous, !visible.contains(where: { $0.id == previous }) {
@@ -591,17 +620,42 @@ import WLAppleAudio
         processing.setForeground(value)
         guard foreground != value else { return }
         foreground = value; localWorker?.setForeground(value)
-        if !value { lookup.close(); invalidateDraft() }
+        foregroundRecovery?.cancel()
+        // Backgrounding is not a Speech restart: preserve the hypothesis, its
+        // revision and translated draft while audio background execution continues.
+        if !value {
+            lookup.close()
+            #if DEBUG
+            if isUIFixture && ProcessInfo.processInfo.arguments.contains("--wl-background-translation") {
+                Task { await simulateUIFixtureBackgroundTranslation() }
+            }
+            #endif
+        }
         else {
-            focusedCaptionID = visible.last?.id
-            // A result completed in the background was never actually displayed there.
-            for segment in visible { updateVisible(segment) }
             refreshDraft()
-            if let id = captionReferenceID { captionDidRender(id: id) }
-            for id in renderedRows { captionDidRender(id: id) }
+            let classroom = session?.id
+            foregroundRecovery = Task { [weak self] in
+                guard let self else { return }
+                await persistence?.value
+                guard !Task.isCancelled, foreground, session?.id == classroom else { return }
+                if workerSession == classroom { await worker?.resumeAfterForeground() }
+                if localWorkerSession == classroom { await localWorker?.resumeAfterForeground() }
+                guard !Task.isCancelled, foreground, session?.id == classroom else { return }
+                let rows = await latestWorkspaceRows()
+                guard !Task.isCancelled, foreground, session?.id == classroom else { return }
+                for row in rows.suffix(30) { updateVisible(row) }
+                refreshDraft(); foregroundRefresh = UUID()
+                if let id = captionReferenceID { captionDidRender(id: id) }
+                for id in renderedRows { captionDidRender(id: id) }
+            }
         }
         log(value ? "caption_foreground" : "caption_background")
         if value && !active { prewarm() }
+    }
+    func syncPictureInPicture() {
+        let latest = workspaceDraft ?? visible.last.map { WorkspaceCaption($0, chinese: captionChinese($0)) }
+        pictureInPicture.update(enabled: pictureInPictureEnabled, session: session?.id, active: active,
+            recording: recording, course: course, english: latest?.english ?? "", chinese: latest?.chinese, elapsed: elapsed)
     }
     func retryLocalTranslation() async {
         guard localEnabled, let selected = session else { return }

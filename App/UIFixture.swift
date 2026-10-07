@@ -22,6 +22,7 @@ struct UIFixtureAppearance: ViewModifier {
 extension LectureController {
     var isUIFixture: Bool { ProcessInfo.processInfo.arguments.contains("--wl-ui-fixture") }
     func installUIFixture() async throws {
+        pictureInPictureEnabled = false
         mode = .mock; course = "ECON1111 · 微观经济学"
         localStatus = "模拟器演示，不调用 Apple 语言模型"; translationStatus = "演示翻译"
         var lesson = LectureSession(course: course, now: Date(timeIntervalSince1970: 1791244800))
@@ -56,6 +57,23 @@ extension LectureController {
             segment.chinese = "[MOCK] 阅读旧句时，新字幕仍继续加入。"; segment.status = .mock
             try await store.append(segment, session: selected.id)
             visible.append(segment); latestCaptionUpdate = segment
+        } catch { warning = error.localizedDescription }
+    }
+    func simulateUIFixtureBackgroundTranslation() async {
+        guard let selected = session, isUIFixture else { return }
+        do {
+            let rows = try await store.segments(selected.id)
+            guard var row = rows.first(where: { $0.id.uuidString.hasSuffix("000000000017") }) else { return }
+            row.status = .completed; row.gptRevision = row.sourceRevision
+            row.chinese = "[MOCK] 后台完成后的最终中文。"; row.translationUpdate = (row.translationUpdate ?? 0) + 1
+            try await store.append(row, session: selected.id)
+            for index in 0..<40 {
+                var added = TranscriptSegment(start: Double(25 + index), end: Double(26 + index), english: "A background caption \(index).")
+                added.id = UUID(uuidString: String(format: "20000000-0000-0000-0000-%012d", 100 + index))!
+                added.status = .mock; added.chinese = "[MOCK] 后台新字幕 \(index)。"
+                try await store.append(added, session: selected.id)
+            }
+            // Deliberately don't publish: reproduce coalesced/missed offscreen UI updates.
         } catch { warning = error.localizedDescription }
     }
     private func populateFixture(_ lesson: inout LectureSession) async throws {

@@ -281,18 +281,21 @@ final class HybridTranslationTests: XCTestCase {
         }
         XCTAssertEqual(observed.sources.last, "prefix 29")
     }
-    @MainActor func testBackgroundSuppressesPartialsAndFairQueueDrainsStableSegments() async throws {
+    @MainActor func testBackgroundTranslatesLatestPartialAndFairQueueDrainsStableSegments() async throws {
         let (root, store, classroom) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
         for index in 0..<8 { try await store.append(segment(index), session: classroom.id) }
         let probe = LocalProbe(); let local = LocalTranslationWorker(store: store, session: classroom.id,
             draftDelay: 0, draftInterval: 0, operation: { await probe.translate($0) })
         let done = expectation(description: "All stable local work drains"); done.expectedFulfillmentCount = 8
         local.onUpdate = { if $0.validLocalChinese != nil { done.fulfill() } }
+        let draftDone = expectation(description: "Background draft remains readable")
+        local.onDraft = { _, text, _ in XCTAssertEqual(text, "本机：Latest background fragment"); draftDone.fulfill(); return .exact }
         local.setForeground(false)
-        for _ in 0..<20 { local.offer(request(session: classroom.id, text: "must not translate partial")); local.kick() }
-        await fulfillment(of: [done], timeout: 5); await local.shutdown(); await local.flushDiagnostics()
-        let observed = await probe.snapshot(); XCTAssertEqual(observed.maximum, 1); XCTAssertEqual(observed.sources.count, 8)
-        XCTAssertEqual(observed.sources.first, segment(7).english); XCTAssertEqual(observed.sources[1], segment(0).english)
+        for _ in 0..<20 { local.offer(request(session: classroom.id, text: "Latest background fragment")); local.kick() }
+        await fulfillment(of: [done, draftDone], timeout: 5); await local.shutdown(); await local.flushDiagnostics()
+        let observed = await probe.snapshot(); XCTAssertEqual(observed.maximum, 1); XCTAssertEqual(observed.sources.count, 9)
+        let stableSources = observed.sources.filter { $0 != "Latest background fragment" }
+        XCTAssertEqual(stableSources.first, segment(7).english); XCTAssertEqual(stableSources[1], segment(0).english)
         XCTAssertEqual(local.resourceCounts.pendingDraft, 0)
     }
     @MainActor func testContinuousForegroundDraftsAlternateWithDurableStableWork() async throws {
