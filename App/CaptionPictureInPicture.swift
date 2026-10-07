@@ -3,6 +3,15 @@ import AVKit
 import CoreMedia
 import WLCore
 
+/// AVKit's synchronous playback queries can arrive off the main thread.
+private final class CaptionPlaybackState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var active = false
+    private var playing = false
+    func set(active: Bool, playing: Bool) { lock.lock(); defer { lock.unlock() }; self.active = active; self.playing = playing }
+    func snapshot() -> (active: Bool, playing: Bool) { lock.lock(); defer { lock.unlock() }; return (active, playing) }
+}
+
 /// Live captions rendered into real video frames for the system PiP window.
 /// This never configures AVAudioSession or owns/cancels the microphone pipeline.
 @MainActor final class CaptionPictureInPicture: NSObject, ObservableObject, AVPictureInPictureControllerDelegate, AVPictureInPictureSampleBufferPlaybackDelegate {
@@ -23,6 +32,7 @@ import WLCore
     private var chinese: String?
     private var elapsed = 0.0
     private var lastFrameAt = Date.distantPast
+    private nonisolated let playbackState = CaptionPlaybackState()
 
     func attach(_ view: CaptionVideoSurface) {
         let changedSurface = surface !== view
@@ -44,6 +54,7 @@ import WLCore
     func update(enabled: Bool, session: UUID?, active: Bool, recording: Bool, course: String, english: String, chinese: String?, elapsed: Double) {
         let changedClassroom = classroom != session
         self.enabled = enabled; classroom = session; hasLecture = active; playing = recording
+        playbackState.set(active: enabled && active, playing: recording)
         self.course = course; self.english = english; self.chinese = chinese; self.elapsed = elapsed
         if changedClassroom { stop(); surface?.displayLayer.flushAndRemoveImage(); lastFrameAt = .distantPast }
         guard enabled, active, supported else {
@@ -123,27 +134,41 @@ import WLCore
         (text as NSString).draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
             attributes: [.font: UIFont.systemFont(ofSize: size), .foregroundColor: color, .paragraphStyle: paragraph], context: nil)
     }
-    func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, setPlaying playing: Bool) {
-        guard enabled, hasLecture, isActive, playing != self.playing else { return }; onSetPlaying?(playing)
+    nonisolated func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, setPlaying playing: Bool) {
+        Task { @MainActor [weak self] in
+            guard let self, enabled, hasLecture, isActive, playing != self.playing else { return }; onSetPlaying?(playing)
+        }
     }
-    func pictureInPictureControllerTimeRangeForPlayback(_ pictureInPictureController: AVPictureInPictureController) -> CMTimeRange {
-        hasLecture ? CMTimeRange(start: .zero, duration: .positiveInfinity) : .invalid
+    nonisolated func pictureInPictureControllerTimeRangeForPlayback(_ pictureInPictureController: AVPictureInPictureController) -> CMTimeRange {
+        playbackState.snapshot().active ? CMTimeRange(start: .zero, duration: .positiveInfinity) : .invalid
     }
-    func pictureInPictureControllerIsPlaybackPaused(_ pictureInPictureController: AVPictureInPictureController) -> Bool { !playing }
-    func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, didTransitionToRenderSize newRenderSize: CMVideoDimensions) { render() }
-    func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, skipByInterval skipInterval: CMTime, completion: @escaping () -> Void) { completion() }
-    func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        isActive = true; status = "小窗已打开"; onDiagnostic?("caption_pip_start", [:])
+    nonisolated func pictureInPictureControllerIsPlaybackPaused(_ pictureInPictureController: AVPictureInPictureController) -> Bool { !playbackState.snapshot().playing }
+    nonisolated func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, didTransitionToRenderSize newRenderSize: CMVideoDimensions) {
+        Task { @MainActor [weak self] in self?.render() }
     }
-    func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        isActive = false; status = enabled ? "小窗已关闭；录音状态不变" : "已关闭"; onDiagnostic?("caption_pip_stop", [:])
+    nonisolated func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, skipByInterval skipInterval: CMTime, completion: @escaping () -> Void) { completion() }
+    nonisolated func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard enabled, hasLecture else { controller?.stopPictureInPicture(); return }
+            isActive = true; status = "小窗已打开"; onDiagnostic?("caption_pip_start", [:])
+        }
     }
-    func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, failedToStartPictureInPictureWithError error: Error) {
-        isActive = false; status = "小窗暂不可用，请稍后重试"
-        onDiagnostic?("caption_pip_error", ["error": error.localizedDescription])
+    nonisolated func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            isActive = false; status = enabled ? "小窗已关闭；录音状态不变" : "已关闭"; onDiagnostic?("caption_pip_stop", [:])
+        }
     }
-    func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
-        completionHandler(true)
+    nonisolated func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, failedToStartPictureInPictureWithError error: Error) {
+        let message = error.localizedDescription
+        Task { @MainActor [weak self] in
+            guard let self, enabled else { return }
+            isActive = false; status = "小窗暂不可用，请稍后重试"; onDiagnostic?("caption_pip_error", ["error": message])
+        }
+    }
+    nonisolated func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
+        Task { @MainActor in completionHandler(true) }
     }
 }
 
@@ -156,7 +181,8 @@ final class CaptionVideoSurface: UIView {
 struct CaptionPictureInPicturePreview: UIViewRepresentable {
     let coordinator: CaptionPictureInPicture
     func makeUIView(context: Context) -> CaptionVideoSurface {
-        let view = CaptionVideoSurface(); coordinator.attach(view); return view
+        let view = CaptionVideoSurface(); view.isAccessibilityElement = false; view.accessibilityElementsHidden = true
+        coordinator.attach(view); return view
     }
     func updateUIView(_ uiView: CaptionVideoSurface, context: Context) { coordinator.attach(uiView) }
 }

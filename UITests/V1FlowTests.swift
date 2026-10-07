@@ -276,7 +276,10 @@ import UIKit
             english.isHittable && chinese.isHittable && timestamp.isHittable
                 && english.frame.minY > 0 && timestamp.frame.maxY < timer.frame.minY
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 10), .completed, "Following must show the complete latest bilingual row above fixed controls")
+        // After rotation, Simulator's accessibility snapshot can take longer than
+        // ten seconds even with the complete row already visible (verified video).
+        // Keep the same geometric assertion; allow the system query to settle.
+        XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 20), .completed, "Following must show the complete latest bilingual row above fixed controls")
     }
     private func assertTabletCaptionWidth(_ app: XCUIApplication) {
         guard UIDevice.current.userInterfaceIdiom == .pad else { return }

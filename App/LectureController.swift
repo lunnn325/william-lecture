@@ -584,6 +584,7 @@ import WLAppleAudio
         local.onUpdate = { [weak self, weak local] segment in
             guard let local, self?.localWorker === local, self?.session?.id == selected.id else { return }
             self?.updateVisible(segment)
+            if segment.validLocalChinese != nil { self?.worker?.kick() }
         }
         local.onState = { [weak self, weak local] state in
             guard let local, self?.localWorker === local else { return }

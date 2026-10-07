@@ -321,7 +321,7 @@ struct WorkspaceView: View {
             if controller.pictureInPictureEnabled && controller.active && controller.pictureInPicture.supported {
                 CaptionPictureInPicturePreview(coordinator: controller.pictureInPicture)
                     .frame(width: 224, height: 126).clipShape(RoundedRectangle(cornerRadius: 10))
-                    .accessibilityHidden(true).overlay(alignment: .topTrailing) {
+                    .overlay(alignment: .topTrailing) {
                         Button { controller.pictureInPicture.start() } label: {
                             Image(systemName: "pip.enter").foregroundStyle(.white).frame(width: 44, height: 44)
                         }.buttonStyle(.plain).accessibilityLabel("打开字幕小窗").accessibilityIdentifier("open-caption-pip")
