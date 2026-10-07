@@ -64,7 +64,9 @@ import WLCore
             if ranges.count == 1, let selection, selection.range == ranges[0], selection.source == view.text { return selection }
             let selected = try LookupSelection(sessionID: sessionID, captionID: focusedCaption,
                 revision: revision, source: view.text ?? "", ranges: ranges)
-            invalidateRequest(); stopPronunciation(); gate.select(selected); selection = selected; message = ""
+            invalidateRequest(); stopPronunciation()
+            let old = presented; presented = nil; old?.dismiss(animated: true)
+            gate.select(selected); selection = selected; message = ""; result = ""
             textView = view
             if let textRange = view.selectedTextRange {
                 let rect = view.firstRect(for: textRange).intersection(view.bounds)
@@ -199,8 +201,8 @@ import WLCore
     private func invalidateRequest() {
         request?.cancel(); request = nil; localTask?.cancel()
         if localTask != nil {
-            let provider = local
-            localCancellation = Task { await provider.cancel() }
+            let provider = local, previous = localCancellation
+            localCancellation = Task { await previous?.value; await provider.cancel() }
         }
         _ = gate.begin(); loading = false
     }
@@ -231,7 +233,9 @@ import WLCore
         presented = controller; controller.presentationController?.delegate = self
         parent.present(controller, animated: true)
     }
-    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) { close() }
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        guard presented === presentationController.presentedViewController else { return }; close()
+    }
     func closedPresentation(selectionID: UUID) {
         guard selection?.id == selectionID else { return }; close()
     }
