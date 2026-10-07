@@ -14,7 +14,10 @@ struct LookupEnglishText: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> LookupTextView {
-        let view = LookupTextView()
+        // These short, non-scrolling views live inside SwiftUI's scroll view.
+        // TextKit 2 produced zero-height selection rects on iPad after scrolling.
+        // Choose UIKit's compatibility engine at creation, before any selection.
+        let view = LookupTextView(usingTextLayoutManager: false)
         view.isEditable = false; view.isSelectable = true; view.isScrollEnabled = false
         view.backgroundColor = .clear; view.textContainerInset = .zero; view.textContainer.lineFragmentPadding = 0
         view.adjustsFontForContentSizeCategory = true; view.delegate = context.coordinator
@@ -46,7 +49,8 @@ struct LookupEnglishText: UIViewRepresentable {
     }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: LookupTextView, context: Context) -> CGSize? {
         guard let width = proposal.width, width > 0 else { return nil }
-        return uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        let fitted = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: fitted.height)
     }
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: LookupEnglishText
@@ -91,6 +95,8 @@ final class LookupTextView: UITextView {
     var onTouch: (() -> Void)?
     var onResign: (() -> Void)?
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        layoutIfNeeded()
+        layoutManager.ensureLayout(for: textContainer)
         onTouch?(); super.touchesBegan(touches, with: event)
     }
     override func resignFirstResponder() -> Bool {
