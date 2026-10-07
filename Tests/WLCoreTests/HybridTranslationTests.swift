@@ -265,15 +265,18 @@ final class HybridTranslationTests: XCTestCase {
         let probe = LocalProbe(); let local = LocalTranslationWorker(store: store, session: classroom.id,
             draftDelay: 0.03, draftInterval: 0.06, operation: { await probe.translate($0) })
         let output = expectation(description: "Continuous input still produces drafts"); output.expectedFulfillmentCount = 2; output.assertForOverFulfill = false
-        local.onDraft = { _, _, _ in output.fulfill(); return .exact }
+        let latest = expectation(description: "The coalesced last revision is delivered")
+        local.onDraft = { request, _, _ in
+            output.fulfill(); if request.english == "prefix 29" { latest.fulfill() }; return .exact
+        }
         let id = UUID(), epoch = UUID()
         for index in 0..<30 {
             local.offer(request(session: classroom.id, id: id, epoch: epoch, revision: index + 1, text: "prefix \(index)"))
             XCTAssertLessThanOrEqual(local.resourceCounts.pendingDraft, 1); XCTAssertLessThanOrEqual(local.resourceCounts.running, 1)
             try await Task.sleep(for: .milliseconds(5))
         }
-        await fulfillment(of: [output], timeout: 3)
-        try await Task.sleep(for: .milliseconds(100)); await local.shutdown(); await local.flushDiagnostics()
+        await fulfillment(of: [output, latest], timeout: 3)
+        await local.shutdown(); await local.flushDiagnostics()
         let observed = await probe.snapshot(); XCTAssertEqual(observed.maximum, 1)
         XCTAssertGreaterThanOrEqual(observed.sources.count, 2); XCTAssertLessThan(observed.sources.count, 30)
         for pair in zip(observed.starts, observed.starts.dropFirst()) {
