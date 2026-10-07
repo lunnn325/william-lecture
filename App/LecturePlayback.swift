@@ -19,6 +19,7 @@ import WLCore
     var ready: Bool { timeline != nil && duration > 0 && !loading }
     func prepare(session: LectureSession, folder: URL, offsets: [String: Double]) async {
         stop(); timeline = nil; duration = 0; self.folder = nil
+        guard session.allowsAudioUse, !session.audioFiles.isEmpty else { loading = false; error = ""; return }
         let ticket = UUID(); generation = ticket; loading = true; error = ""
         defer { if generation == ticket { loading = false } }
         do {
@@ -73,6 +74,7 @@ import WLCore
         } catch { self.error = error.localizedDescription; player = nil; playing = false }
     }
     func stop() { generation = UUID(); player?.stop(); player = nil; playing = false; timer?.cancel(); timer = nil; position = 0 }
+    func invalidateAudio() { stop(); timeline = nil; folder = nil; duration = 0; loading = false; error = "" }
     private func updatePosition() {
         guard let timeline, let player, index < timeline.slices.count else { return }
         position = min(duration, timeline.slices[index].start + player.currentTime)

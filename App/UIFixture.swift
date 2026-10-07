@@ -26,6 +26,13 @@ extension LectureController {
         localStatus = "模拟器演示，不调用 Apple 语言模型"; translationStatus = "演示翻译"
         var lesson = LectureSession(course: course, now: Date(timeIntervalSince1970: 1791244800))
         lesson.id = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        // Deletion/cleanup UI tests must not change the next independent fixture launch.
+        // Release never enters this path; only the constant simulator classroom is reset.
+        guard isUIFixture, store.root.lastPathComponent == "UIFixture" else { return }
+        let previous = store.folder(lesson.id)
+        if FileManager.default.fileExists(atPath: previous.path) { try FileManager.default.removeItem(at: previous) }
+        let marker = store.root.appendingPathComponent(".deleted/\(lesson.id.uuidString)")
+        if FileManager.default.fileExists(atPath: marker.path) { try FileManager.default.removeItem(at: marker) }
         lesson.state = ProcessInfo.processInfo.arguments.contains("--wl-fixture-active") ? .recording : .stopped
         lesson.stoppedAt = lesson.state == .stopped ? lesson.startedAt.addingTimeInterval(24) : nil
         try await populateFixture(&lesson)

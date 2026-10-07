@@ -5,6 +5,7 @@ public enum TranslationStatus: String, Codable, Sendable { case pending, complet
 public enum CaptionPhase: String, Sendable { case transcribing, localDraft, queuedForGPT, gptTranslating, final, failed, localOnly }
 public enum ExportLanguage: String, CaseIterable, Sendable { case english, chinese, bilingual }
 public enum SessionTimeline: String, Codable, Sendable { case recordedAudio }
+public enum AudioStorageState: String, Codable, Sendable { case available, clearing, cleared }
 
 public struct LectureSession: Codable, Identifiable, Sendable {
     public var id: UUID
@@ -24,6 +25,9 @@ public struct LectureSession: Codable, Identifiable, Sendable {
     public var preview: String?
     public var markCount: Int?
     public var speechLocale: String?
+    /// Nil preserves recordings created before 1.1.2. Clearing is a durable operation intent.
+    public var audioStorage: AudioStorageState?
+    public var allowsAudioUse: Bool { audioStorage == nil || audioStorage == .available }
     public var displayTitle: String { (title?.isEmpty == false ? title : nil) ?? (course.isEmpty || course == "未命名课程" ? "未分类课程" : course) }
     public init(course: String, now: Date = Date()) {
         id = UUID(); self.course = course; startedAt = now

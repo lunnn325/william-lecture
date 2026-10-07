@@ -34,6 +34,11 @@ import WLAppleAudio
     @Published var busy = false
     @Published var starting = false
     @Published var stopping = false
+    @Published var exportPresentations = 0
+    @Published private(set) var libraryMutation: UUID?
+    var libraryActionsAllowed: Bool { !active && !busy && !starting && !stopping && !noteBusy && exportPresentations == 0 }
+    private var workerSession: UUID?
+    private var localWorkerSession: UUID?
     @Published var mode = TranslationMode(rawValue: UserDefaults.standard.string(forKey: "translationMode") ?? "openAI") ?? .openAI
     @Published var model = UserDefaults.standard.string(forKey: "translationModel") ?? "gpt-5.6-luna"
     @Published var locale = UserDefaults.standard.string(forKey: "speechLocale") ?? "en-AU"
@@ -377,6 +382,7 @@ import WLAppleAudio
         }
         translationBlocked = false
         self.worker = worker
+        workerSession = session.id
     }
     private func updateVisible(_ segment: TranscriptSegment) {
         var segment = segment
@@ -538,6 +544,7 @@ import WLAppleAudio
             self?.localStatus = state
         }
         localWorker = local; local.setForeground(foreground)
+        localWorkerSession = selected.id
         localStatus = mock ? "MOCK 本机译者" : "仅使用已安装模型；录课期间不下载"
     }
     private func refreshDraft() {
@@ -667,6 +674,32 @@ import WLAppleAudio
         enqueue { try await self.store.log(item, session: id) }
     }
     func refreshHistory() async { do { history = try await store.sessions() } catch { warning = error.localizedDescription } }
+    /// The UI is locked before yielding. Background processing is held until the durable
+    /// store operation completes; cancellation alone is never the deletion fence.
+    func removeLibraryFiles(_ selected: LectureSession, audioOnly: Bool) async throws {
+        guard libraryActionsAllowed else { throw WLFailure.message("请先结束录课并等待保存或导出完成") }
+        busy = true; libraryMutation = selected.id
+        defer { busy = false; libraryMutation = nil; processing.releaseSession(selected.id) }
+        await persistence?.value
+        await processing.holdSession(selected.id)
+        if !audioOnly {
+            if workerSession == selected.id { worker?.cancel(); worker = nil; workerSession = nil }
+            if localWorkerSession == selected.id { await localWorker?.shutdown(); localWorker = nil; localWorkerSession = nil }
+        }
+        do {
+            if audioOnly {
+                let updated = try await store.clearAudio(selected.id)
+                if session?.id == selected.id { session = updated }
+            } else {
+                try await store.deleteSession(selected.id)
+                if session?.id == selected.id {
+                    session = nil; visible = []; latestCaptionUpdate = nil; sessionNotes = []
+                    currentChinese = ""; volatileEnglish = ""; previewChinese = [:]; drafts.invalidate()
+                }
+            }
+            await refreshHistory()
+        } catch { await refreshHistory(); throw error }
+    }
     func retryTranslations(_ selected: LectureSession) async {
         guard !busy else { return }; busy = true; defer { busy = false }
         guard !active || selected.id == session?.id else { warning = "录音期间只能补当前课堂"; return }
@@ -694,11 +727,11 @@ import WLAppleAudio
         busy = true; defer { busy = false }
         await persistence?.value
         guard let saved = try await store.sessions().first(where: { $0.id == selected.id }) else { throw WLFailure.message("课堂不存在") }
+        guard saved.allowsAudioUse else { throw WLFailure.message("录音已清理，无法导出音频") }
         let offsets = try await store.audioOffsets(saved.id)
         let folder = store.folder(saved.id)
         let chunks = saved.audioFiles.map { AudioExportChunk(url: folder.appendingPathComponent($0), start: offsets[$0]) }
-        let directory = folder.appendingPathComponent("Exports", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let directory = try await store.exportDirectory(saved.id, audio: true)
         return try await AudioExporter.m4a(chunks: chunks, destination: directory.appendingPathComponent("WilliamLecture-\(UUID().uuidString).m4a"), preservingGaps: !saved.usesRecordingTimeline)
     }
     func retrySpeech() async {

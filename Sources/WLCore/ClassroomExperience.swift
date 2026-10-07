@@ -19,11 +19,13 @@ public struct LectureNote: Codable, Identifiable, Equatable, Sendable {
 
 public extension SessionStore {
     func notes(_ session: UUID) throws -> [LectureNote] {
+        try requireSession(session)
         var latest: [UUID: LectureNote] = [:]
         try JSONLines.scan(LectureNote.self, at: folder(session).appendingPathComponent("notes.jsonl")) { latest[$0.id] = $0 }
         return latest.values.filter(\.isActive).sorted { $0.offset == $1.offset ? $0.createdAt < $1.createdAt : $0.offset < $1.offset }
     }
     func saveNote(_ note: LectureNote, session: UUID) throws {
+        try requireSession(session)
         guard note.offset.isFinite, note.offset >= 0, note.text.count <= 6000,
               FileManager.default.fileExists(atPath: folder(session).appendingPathComponent("session.json").path) else {
             throw WLFailure.message("笔记无法保存，请检查课堂记录和内容长度")
@@ -38,8 +40,7 @@ public extension SessionStore {
         try save(current)
     }
     func exportNotes(_ session: UUID, markdown: Bool) throws -> URL {
-        let directory = folder(session).appendingPathComponent("Exports", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let directory = try exportDirectory(session)
         let url = directory.appendingPathComponent("WilliamLecture-notes-\(UUID().uuidString).\(markdown ? "md" : "txt")")
         var lines = [markdown ? "# 课堂标记与笔记" : "课堂标记与笔记", "记录时原文是标记快照，可能尚未定稿；正式文字稿另行导出。", ""]
         for note in try notes(session) {

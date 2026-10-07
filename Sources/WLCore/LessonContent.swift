@@ -136,6 +136,7 @@ public struct LessonContent: Codable, Sendable {
 
 extension SessionStore {
     public func content(_ id: UUID) throws -> LessonContent? {
+        try requireSession(id)
         let url = folder(id).appendingPathComponent("content.json")
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
@@ -144,7 +145,12 @@ extension SessionStore {
         return value
     }
     @discardableResult public func saveContent(_ content: LessonContent) throws -> Bool {
+        try requireSession(content.sessionID)
         guard !Task.isCancelled, content.fingerprint == LessonContent.fingerprint(try segments(content.sessionID)) else { return false }
+        var content = content
+        if !(try sessionMetadata(content.sessionID)).allowsAudioUse {
+            content.audioRepairWarning = try audioRepairRanges(content.sessionID).isEmpty ? nil : "录音已清理，未补转写的内容无法恢复"
+        }
         if let current = try self.content(content.sessionID), current.fingerprint == content.fingerprint,
            current.updatedAt > content.updatedAt { return false }
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .millisecondsSince1970
@@ -156,11 +162,13 @@ extension SessionStore {
         return true
     }
     public func usageEntries(_ id: UUID) throws -> [UsageEntry] {
+        try requireSession(id)
         var latest: [UUID: UsageEntry] = [:]
         try JSONLines.scan(UsageEntry.self, at: folder(id).appendingPathComponent("usage.jsonl")) { latest[$0.id] = $0 }
         return latest.values.sorted { $0.at < $1.at }
     }
     public func reserveUsage(_ entry: UsageEntry, session id: UUID) throws {
+        try requireSession(id)
         guard entry.reserved >= 0 else { throw WLFailure.message("无效用量预留") }
         if entry.scope == .postLesson {
             guard UsageTotals(try usageEntries(id)).chargedPostLesson + entry.reserved <= 250_000 else {
@@ -170,6 +178,7 @@ extension SessionStore {
         try JSONLines.append(entry, to: folder(id).appendingPathComponent("usage.jsonl"))
     }
     public func finishUsage(_ entry: UsageEntry, metadata: APIResponseMetadata, session id: UUID) throws {
+        try requireSession(id)
         var result = entry; result.responseID = metadata.id; result.usage = metadata.usage; result.tier = metadata.tier
         try JSONLines.append(result, to: folder(id).appendingPathComponent("usage.jsonl"))
     }
@@ -199,8 +208,7 @@ extension SessionStore {
             }
         }
         add(content.outline, depth: 2)
-        let directory = folder(id).appendingPathComponent("Exports")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let directory = try exportDirectory(id)
         let url = directory.appendingPathComponent("Study-\(UUID().uuidString).md")
         try lines.joined(separator: "\n\n").write(to: url, atomically: true, encoding: .utf8); return url
     }

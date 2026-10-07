@@ -5,6 +5,7 @@ import WLCore
 struct HistoryList: View {
     @EnvironmentObject private var controller: LectureController
     @State private var search = ""
+    @State private var removal: LibraryRemovalRequest?
     private var filtered: [LectureSession] {
         controller.history.filter { search.isEmpty || $0.course.localizedCaseInsensitiveContains(search) || $0.displayTitle.localizedCaseInsensitiveContains(search) || $0.startedAt.formatted().contains(search) }
     }
@@ -32,6 +33,14 @@ struct HistoryList: View {
                             .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.williamSecondary.opacity(0.08), lineWidth: 0.5))
                             .shadow(color: .black.opacity(0.035), radius: 8, y: 3)
                     }.buttonStyle(.plain).accessibilityIdentifier("history-\(session.id.uuidString)")
+                        .contextMenu {
+                            Button("清理录音", systemImage: "waveform.slash", role: .destructive) {
+                                Task { removal = await LibraryRemovalRequest.prepare(session, audioOnly: true, store: controller.store) }
+                            }.disabled(!controller.libraryActionsAllowed || session.audioStorage == .cleared)
+                            Button("删除记录", systemImage: "trash", role: .destructive) {
+                                Task { removal = await LibraryRemovalRequest.prepare(session, audioOnly: false, store: controller.store) }
+                            }.disabled(!controller.libraryActionsAllowed)
+                        }
                 }
             }.frame(maxWidth: 720).padding(20).frame(maxWidth: .infinity)
         }.background(Color(uiColor: .systemGroupedBackground)).accessibilityIdentifier("classroom-history")
@@ -39,10 +48,12 @@ struct HistoryList: View {
             .task { await controller.refreshHistory() }
             .refreshable { await controller.refreshHistory() }
             .onReceive(controller.processing.$change) { _ in Task { await controller.refreshHistory() } }
+            .modifier(LibraryRemovalConfirmation(request: $removal))
     }
 }
 
 struct LessonDetailView: View {
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var controller: LectureController
     @State private var session: LectureSession
     @State private var segments: [TranscriptSegment] = []
@@ -58,6 +69,7 @@ struct LessonDetailView: View {
     @State private var noteContext: NoteContext?
     @State private var renaming = false
     @State private var name = ""
+    @State private var removal: LibraryRemovalRequest?
     @State private var shareFiles: [URL] = []
     @State private var sharing = false
     @State private var showUsage = false
@@ -102,7 +114,9 @@ struct LessonDetailView: View {
                     if let message = document?.audioRepairWarning {
                         DisclosureGroup("部分音频尚未补转写") {
                             Text(message).font(.footnote).foregroundStyle(Color.williamWarning)
-                            Button("重试补处理") { Task { await controller.processing.enqueue(session, retry: true); await load() } }.disabled(controller.active)
+                            if session.allowsAudioUse {
+                                Button("重试补处理") { Task { await controller.processing.enqueue(session, retry: true); await load() } }.disabled(controller.active || controller.busy)
+                            }
                         }.font(.footnote).foregroundStyle(Color.williamSecondary)
                     }
                     if tab == 0 { transcript }
@@ -127,7 +141,17 @@ struct LessonDetailView: View {
         .navigationTitle(session.displayTitle).navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) { Button { export = true } label: { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("导出课堂") }
-            ToolbarItem(placement: .topBarTrailing) { Button { name = session.displayTitle; renaming = true } label: { Image(systemName: "ellipsis") }.accessibilityLabel("修改名称") }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("修改名称", systemImage: "pencil") { name = session.displayTitle; renaming = true }.disabled(controller.busy)
+                    Button("清理录音", systemImage: "waveform.slash", role: .destructive) {
+                        Task { removal = await LibraryRemovalRequest.prepare(session, audioOnly: true, store: controller.store) }
+                    }.disabled(!controller.libraryActionsAllowed || session.audioStorage == .cleared)
+                    Button("删除记录", systemImage: "trash", role: .destructive) {
+                        Task { removal = await LibraryRemovalRequest.prepare(session, audioOnly: false, store: controller.store) }
+                    }.disabled(!controller.libraryActionsAllowed)
+                } label: { Image(systemName: "ellipsis") }.accessibilityLabel("课堂菜单").accessibilityIdentifier("lesson-menu")
+            }
         }
         .alert("课堂名称", isPresented: $renaming) {
             TextField("名称", text: $name)
@@ -135,17 +159,25 @@ struct LessonDetailView: View {
             Button("保存") { Task { do { try await controller.store.rename(session.id, title: name); await load(); await controller.refreshHistory() } catch { self.error = error.localizedDescription } } }
         }
         .sheet(isPresented: $export) { ExportView(session: session) }
-        .sheet(isPresented: $sharing) { ActivityShareView(files: shareFiles) }
+        .sheet(isPresented: $sharing) {
+            ActivityShareView(files: shareFiles)
+                .onAppear { controller.exportPresentations += 1 }
+                .onDisappear { controller.exportPresentations = max(0, controller.exportPresentations - 1) }
+        }
         .sheet(item: $noteContext, onDismiss: { Task { await load() } }) { NoteEditorView(context: $0).id($0.id) }
+        .modifier(LibraryRemovalConfirmation(request: $removal, beforeAction: { playback.invalidateAudio() }, onSuccess: { audioOnly in
+            if audioOnly { await load() } else { dismiss() }
+        }))
         .task {
             playback.recordingActive = { controller.active }
             await load()
-            do { let offsets = try await controller.store.audioOffsets(session.id); await playback.prepare(session: session, folder: controller.store.folder(session.id), offsets: offsets) }
+            do { if session.allowsAudioUse { let offsets = try await controller.store.audioOffsets(session.id); await playback.prepare(session: session, folder: controller.store.folder(session.id), offsets: offsets) } }
             catch { self.error = error.localizedDescription }
         }
         .onReceive(controller.processing.$change) { _ in Task { await load() } }
         .onDisappear { playback.stop() }
         .onChange(of: controller.active) { _, active in if active { playback.stop() } }
+        .onChange(of: controller.libraryMutation) { _, id in if id == session.id { playback.invalidateAudio() } }
     }
     private var metadata: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -167,7 +199,10 @@ struct LessonDetailView: View {
         }
     }
     @ViewBuilder private var player: some View {
-        if playback.loading { ProgressView("正在读取录音") }
+        if !session.allowsAudioUse {
+            Text(session.audioStorage == .clearing ? "录音清理未完成" : "录音已清理").font(.footnote).foregroundStyle(Color.williamSecondary).accessibilityIdentifier("audio-cleared")
+        }
+        else if playback.loading { ProgressView("正在读取录音") }
         else if !session.audioFiles.isEmpty {
             VStack(spacing: 8) {
                 Slider(value: Binding(get: { scrubbing ? scrubValue : playback.position }, set: { scrubValue = $0 }), in: 0...max(1, playback.duration)) { editing in
@@ -281,16 +316,21 @@ struct LessonDetailView: View {
     private func load() async {
         do {
             if let saved = try await controller.store.sessions().first(where: { $0.id == session.id }) { session = saved }
+            if !session.allowsAudioUse { playback.invalidateAudio() }
             segments = try await controller.store.segments(session.id); notes = try await controller.store.notes(session.id)
             document = try await controller.store.content(session.id); totals = try await controller.store.usageTotals(session.id)
             page = min(page, max(0, (filtered.count - 1) / 50)); error = ""
         } catch { self.error = error.localizedDescription }
     }
     private func shareStudy() async {
+        guard !controller.busy, !controller.active else { error = "请先结束录课并等待保存完成"; return }
+        controller.busy = true; defer { controller.busy = false }
         do { shareFiles = [try await controller.store.exportStudy(session.id)]; sharing = true }
         catch { self.error = error.localizedDescription }
     }
     private func shareMap() async {
+        guard !controller.busy, !controller.active else { error = "请先结束录课并等待保存完成"; return }
+        controller.busy = true; defer { controller.busy = false }
         guard let d = document else { return }
         let renderer = ImageRenderer(content: LessonMindMap(title: d.title ?? session.course, nodes: d.outline, jump: { _ in })
             .frame(width: 1000).padding(30).background(Color.white).environment(\.colorScheme, .light))
@@ -383,7 +423,7 @@ struct ExportView: View {
                 }.disabled(working)
                 Section("同时带走") {
                     Toggle("标记与笔记", isOn: $notes)
-                    Toggle("整节录音 · M4A", isOn: $audio).disabled(session.audioFiles.isEmpty)
+                    Toggle("整节录音 · M4A", isOn: $audio).disabled(!session.allowsAudioUse || session.audioFiles.isEmpty)
                     Toggle("诊断文件", isOn: $diagnostics)
                     Text("笔记独立成文件；诊断用于检查延迟或故障。所有文件均为生成时的快照。").font(.footnote).foregroundStyle(Color.williamSecondary)
                 }.disabled(working)
@@ -394,6 +434,8 @@ struct ExportView: View {
                 .sheet(isPresented: $sharing) { ActivityShareView(files: files) }
                 .onChange(of: exportChoice) { _, _ in files = []; error = "" }
                 .onDisappear { task?.cancel() }
+                .onAppear { controller.exportPresentations += 1 }
+                .onDisappear { controller.exportPresentations = max(0, controller.exportPresentations - 1) }
         }
     }
     private var exportActions: some View {

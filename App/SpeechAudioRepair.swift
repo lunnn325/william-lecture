@@ -5,6 +5,7 @@ import WLCore
 /// backwards or reopen the recorder. Source offsets stay on the captured-audio axis.
 @MainActor enum SpeechAudioRepair {
     static func repair(_ session: LectureSession, store: SessionStore) async throws {
+        guard try await store.sessionMetadata(session.id).allowsAudioUse else { return }
         let ranges = try await store.audioRepairRanges(session.id)
         guard !ranges.isEmpty else { return }
         let offsets = try await store.audioOffsets(session.id)
@@ -29,6 +30,8 @@ import WLCore
                 try await service.start(localeIdentifier: session.speechLocale ?? UserDefaults.standard.string(forKey: "speechLocale") ?? "en-AU")
                 var fed = false
                 for name in files {
+                    try Task.checkCancellation()
+                    guard try await store.sessionMetadata(session.id).allowsAudioUse else { return }
                     guard let fileStart = offsets[name] else { throw WLFailure.message("录音片段缺少时间信息") }
                     let file = try AVAudioFile(forReading: store.folder(session.id).appendingPathComponent(name))
                     let rate = file.processingFormat.sampleRate

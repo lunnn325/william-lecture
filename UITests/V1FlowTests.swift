@@ -3,6 +3,38 @@ import UIKit
 
 @MainActor final class V1FlowTests: XCTestCase {
     override func setUp() { super.setUp(); continueAfterFailure = false; XCUIDevice.shared.orientation = .portrait }
+    func testLibraryCleanupPlaybackExportAndDetailDeletion() {
+        let app = launch(active: false)
+        let card = app.buttons["history-10000000-0000-0000-0000-000000000001"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        card.press(forDuration: 1); app.buttons["清理录音"].tap()
+        XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 5)); app.alerts.buttons["取消"].tap()
+        XCTAssertTrue(card.exists); card.tap()
+        let play = app.buttons["play-lecture"]; XCTAssertTrue(play.waitForExistence(timeout: 10)); waitEnabled(play); play.tap()
+        app.buttons["lesson-menu"].tap(); app.buttons["清理录音"].tap()
+        XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 5)); app.alerts.buttons["清理录音"].tap()
+        XCTAssertTrue(app.staticTexts["audio-cleared"].waitForExistence(timeout: 10)); XCTAssertFalse(play.exists)
+        XCTAssertTrue(app.staticTexts["caption-english-20000000-0000-0000-0000-000000000001"].exists)
+        capture(app, "audio-cleared-detail")
+        app.buttons["导出课堂"].tap(); app.buttons["生成导出文件"].tap()
+        XCTAssertTrue(app.buttons["分享 / 保存到文件"].waitForExistence(timeout: 40)); app.buttons["完成"].tap()
+        app.buttons["lesson-menu"].tap(); app.buttons["删除记录"].tap()
+        XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 5)); app.alerts.buttons["删除记录"].tap()
+        XCTAssertTrue(app.buttons["start-recording"].waitForExistence(timeout: 10)); XCTAssertFalse(card.exists)
+    }
+    func testLibraryCardDeletionCancellationAndNextRecording() {
+        let app = launch(active: false)
+        let card = app.buttons["history-10000000-0000-0000-0000-000000000001"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        card.press(forDuration: 1); app.buttons["删除记录"].tap()
+        XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 5)); app.alerts.buttons["取消"].tap()
+        XCTAssertTrue(card.exists)
+        card.press(forDuration: 1); app.buttons["删除记录"].tap()
+        XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 5)); app.alerts.buttons["删除记录"].tap()
+        XCTAssertTrue(app.staticTexts["暂无记录"].waitForExistence(timeout: 10)); XCTAssertFalse(card.exists)
+        app.buttons["start-recording"].tap()
+        XCTAssertTrue(app.buttons["pause-recording"].waitForExistence(timeout: 10))
+    }
     func testSelectedSentenceMarkWhileRecording() {
         let app = launch(active: true)
         XCTAssertTrue(app.buttons["pause-recording"].waitForExistence(timeout: 20))

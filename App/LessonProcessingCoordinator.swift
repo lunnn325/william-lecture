@@ -15,6 +15,8 @@ import WLCore
     private var online = true
     private var lease: UIBackgroundTaskIdentifier = .invalid
     private var deferredWake = false
+    private var heldSessions: Set<UUID> = []
+    private var currentSession: UUID?
     init(store: SessionStore) { self.store = store }
     func setRecording(_ value: Bool) { recording = value; if value { task?.cancel() } else { wake() } }
     func setForeground(_ value: Bool) {
@@ -34,6 +36,7 @@ import WLCore
     }
     func speechModelsPrepared() async {
         for session in (try? await store.sessions()) ?? [] where [.stopped, .recovered].contains(session.state) {
+            guard session.allowsAudioUse else { continue }
             guard let content = try? await store.content(session.id) else { continue }
             if content.audioRepairWarning != nil || (content.state == .failed && content.error?.contains("Speech") == true) {
                 await enqueue(session, retry: true)
@@ -58,6 +61,7 @@ import WLCore
     }
     private func endLease() { if lease != .invalid { UIApplication.shared.endBackgroundTask(lease); lease = .invalid } }
     func enqueue(_ session: LectureSession, retry: Bool = false) async {
+        guard !heldSessions.contains(session.id) else { return }
         do {
             let sources = try await store.segments(session.id)
             var content = try await store.content(session.id) ?? LessonContent(sessionID: session.id, segments: sources)
@@ -76,20 +80,32 @@ import WLCore
         task = Task { [weak self] in
             guard let self else { return }
             defer {
-                self.task = nil; self.endLease()
+                self.task = nil; self.currentSession = nil; self.endLease()
                 if self.deferredWake { self.deferredWake = false; self.wake() }
             }
             do {
                 let sessions = try await store.sessions()
                 for session in sessions where [.stopped, .recovered].contains(session.state) {
                     try Task.checkCancellation()
+                    guard !heldSessions.contains(session.id), (try? await store.sessionMetadata(session.id)) != nil else { continue }
+                    currentSession = session.id
+                    guard !heldSessions.contains(session.id) else { currentSession = nil; continue }
                     // Old sessions are not silently migrated or sent to a new model.
-                    guard let content = try await store.content(session.id), content.state.automatic else { continue }
+                    guard let content = try await store.content(session.id), content.state.automatic, !Task.isCancelled,
+                          !heldSessions.contains(session.id) else { currentSession = nil; continue }
                     await process(session, initial: content)
+                    currentSession = nil
                 }
             } catch { }
         }
     }
+    /// Hold only the target classroom. A queue snapshot cannot restart it during cleanup.
+    func holdSession(_ id: UUID) async {
+        heldSessions.insert(id)
+        if currentSession == id { task?.cancel(); await task?.value }
+        enqueueFailures.removeValue(forKey: id)
+    }
+    func releaseSession(_ id: UUID) { heldSessions.remove(id); change += 1; wake() }
     private func save(_ content: inout LessonContent) async throws {
         content.updatedAt = Date()
         guard try await store.saveContent(content) else { throw LessonAPIError.invalid("原文已更新，旧处理结果已丢弃") }
@@ -116,7 +132,10 @@ import WLCore
                 try await save(&document)
             }
             document.audioRepairWarning = repairWarning
-            guard !sources.isEmpty else { throw LessonAPIError.invalid("未识别到内容，录音可回放和导出") }
+            if !(try await store.sessionMetadata(session.id)).allowsAudioUse {
+                document.audioRepairWarning = try await store.audioRepairRanges(session.id).isEmpty ? nil : "录音已清理，未补转写的内容无法恢复"
+            }
+            guard !sources.isEmpty else { throw LessonAPIError.invalid(session.allowsAudioUse ? "未识别到内容，录音可回放和导出" : "没有可处理的文字，录音已清理") }
             guard let key = Keychain.load(), !key.isEmpty else {
                 document.state = .needsConfiguration; document.error = "未配置 OpenAI Key"; try await save(&document); return
             }

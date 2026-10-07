@@ -33,6 +33,7 @@ public struct AudioRepairRange: Sendable, Equatable {
 }
 extension SessionStore {
     public func audioRepairRanges(_ id: UUID) throws -> [AudioRepairRange] {
+        try requireSession(id)
         var gaps: [AudioRepairRange] = [], done: [AudioRepairRange] = []
         try JSONLines.scan(Diagnostic.self, at: folder(id).appendingPathComponent("diagnostics.jsonl")) { item in
             guard let start = item.fields["range_start"].flatMap(Double.init), let end = item.fields["range_end"].flatMap(Double.init) else { return }
@@ -43,7 +44,7 @@ extension SessionStore {
         return AudioRepairRange.uncovered(gaps, covered: done + coverage)
     }
     public func appendRepaired(_ source: TranscriptSegment, session id: UUID) throws -> Bool {
-        guard !Task.isCancelled, source.end > source.start,
+        guard try sessionMetadata(id).allowsAudioUse, !Task.isCancelled, source.end > source.start,
               !((try segments(id)).contains { $0.start < source.end - 0.02 && $0.end > source.start + 0.02 }) else { return false }
         try append(source, session: id); return true
     }

@@ -81,7 +81,14 @@ public actor SessionStore {
     }
     public func save(_ session: LectureSession) throws {
         try prepare()
-        let directory = folder(session.id)
+        guard !isDeleted(session.id) else { throw WLFailure.message("课堂记录已删除") }
+        let directory = try checkedFolder(session.id)
+        var session = session
+        if let current = try? sessionMetadata(session.id), !current.allowsAudioUse {
+            // Audio cleanup is monotonic, even if a late lifecycle snapshot is saved.
+            session.audioStorage = current.audioStorage == .cleared || session.audioStorage == .cleared ? .cleared : .clearing
+            session.audioFiles = []
+        }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .millisecondsSince1970; encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(session).write(to: directory.appendingPathComponent("session.json"), options: .atomic)
@@ -94,15 +101,17 @@ public actor SessionStore {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
         return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             .compactMap { directory in
+                guard let id = UUID(uuidString: directory.lastPathComponent), !isDeleted(id), (try? checkedFolder(id)) != nil else { return nil }
                 guard let data = try? Data(contentsOf: directory.appendingPathComponent("session.json")) else { return nil }
                 guard var session = try? decoder.decode(LectureSession.self, from: data),
                       session.id.uuidString.caseInsensitiveCompare(directory.lastPathComponent) == .orderedSame else { return nil }
                 let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-                session.audioFiles = files.filter { $0.pathExtension == "caf" }.map(\.lastPathComponent).sorted()
+                session.audioFiles = session.allowsAudioUse ? files.filter { $0.pathExtension == "caf" }.map(\.lastPathComponent).sorted() : []
                 return session
             }.sorted { $0.startedAt > $1.startedAt }
     }
     public func append(_ segment: TranscriptSegment, session: UUID) throws {
+        try requireSession(session)
         try JSONLines.append(segment, to: folder(session).appendingPathComponent("transcript.jsonl"))
         if translationSession == session { translationIndex[segment.id] = segment }
         if pendingSession == session {
@@ -111,6 +120,7 @@ public actor SessionStore {
         }
     }
     private func loadTranslationIndex(_ session: UUID) throws {
+        try requireSession(session)
         guard translationSession != session else { return }
         var index: [UUID: TranscriptSegment] = [:]
         try JSONLines.scan(TranscriptSegment.self, at: folder(session).appendingPathComponent("transcript.jsonl")) { index[$0.id] = $0 }
@@ -203,20 +213,24 @@ public actor SessionStore {
         return current
     }
     public func log(_ diagnostic: Diagnostic, session: UUID) throws {
+        try requireSession(session)
         var safe = diagnostic
         safe.fields = safe.fields.mapValues(DiagnosticRedaction.redact)
         try JSONLines.append(safe, to: folder(session).appendingPathComponent("diagnostics.jsonl"))
     }
     public func appendFinal(_ piece: SpeechPiece, session: UUID) throws {
+        try requireSession(session)
         try JSONLines.append(piece, to: folder(session).appendingPathComponent("speech-final.jsonl"))
     }
     public func segments(_ id: UUID) throws -> [TranscriptSegment] {
+        try requireSession(id)
         var records: [UUID: TranscriptSegment] = [:]
         try JSONLines.scan(TranscriptSegment.self, at: folder(id).appendingPathComponent("transcript.jsonl")) { records[$0.id] = $0 }
         return records.values.sorted { $0.start < $1.start }
     }
     public func pending(_ id: UUID, limit: Int = 16, retryFailed: Bool = false,
                         excluding: Set<UUID> = [], newestFirst: Bool = false) throws -> [TranscriptSegment] {
+        try requireSession(id)
         if pendingSession != id {
             var index: [UUID: TranscriptSegment] = [:]
             try JSONLines.scan(TranscriptSegment.self, at: folder(id).appendingPathComponent("transcript.jsonl")) {
@@ -235,7 +249,7 @@ public actor SessionStore {
     }
     @discardableResult public func recover() throws -> [String] {
         try prepare()
-        var issues: [String] = []
+        var issues = try recoverLibraryCleanup()
         let directories = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         let readable = try sessions()
         var damagedTranscripts: Set<UUID> = []
@@ -261,7 +275,7 @@ public actor SessionStore {
         }
         let readableIDs = Set(readable.map(\.id))
         for directory in directories {
-            if let id = UUID(uuidString: directory.lastPathComponent), !readableIDs.contains(id) {
+            if let id = UUID(uuidString: directory.lastPathComponent), !isDeleted(id), !readableIDs.contains(id) {
                 issues.append("课堂 \(id) 的 metadata 无法读取；原文件保留，可从文件共享取回")
             }
         }
@@ -306,14 +320,16 @@ public actor SessionStore {
     }
     public func export(_ id: UUID, language: ExportLanguage, markdown: Bool, original: Bool = false) throws -> URL {
         guard let session = try sessions().first(where: { $0.id == id }) else { throw WLFailure.message("Session not found") }
-        let directory = folder(id).appendingPathComponent("Exports", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let directory = try exportDirectory(id)
         let url = directory.appendingPathComponent("WilliamLecture-\(language.rawValue)-\(UUID().uuidString).\(markdown ? "md" : "txt")")
         let records = try segments(id)
         let document = original ? nil : try content(id)
         var lines = ["\(markdown ? "# " : "")\(session.displayTitle)", "Session: \(session.id)", "Date: \(session.startedAt.ISO8601Format())", ""]
         if let document, document.state != .completed { lines.append("课后处理：\(document.state.label)。文件为当前快照，缺失内容明确标记。") }
-        if let document, document.audioRepairWarning != nil { lines.append("部分音频尚未补转写；已保存的文字和译文可用，请核对音频与缺口记录。") }
+        if !session.allowsAudioUse { lines.append("录音已清理；时间戳及已保存内容保留。") }
+        if let document, document.audioRepairWarning != nil {
+            lines.append(session.allowsAudioUse ? "部分音频尚未补转写；已保存的文字和译文可用，请核对音频与缺口记录。" : "部分内容未补转写，录音已清理，无法恢复缺失文字。")
+        }
         lines.insert(session.usesRecordingTimeline ? "时间轴：实际录音，暂停不计时。" : "时间轴：旧版课堂，保留暂停空档。", at: 3)
         var gaps: [Diagnostic] = []
         try JSONLines.scan(Diagnostic.self, at: folder(id).appendingPathComponent("diagnostics.jsonl")) {
@@ -342,14 +358,14 @@ public actor SessionStore {
     /// A stable shareable file, not the journal still receiving late translation events.
     public func exportDiagnostics(_ id: UUID) throws -> URL {
         let source = folder(id).appendingPathComponent("diagnostics.jsonl")
-        let directory = folder(id).appendingPathComponent("Exports", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let directory = try exportDirectory(id)
         let target = directory.appendingPathComponent("diagnostics-\(UUID().uuidString).jsonl")
         if FileManager.default.fileExists(atPath: source.path) { try FileManager.default.copyItem(at: source, to: target) }
         else { try Data().write(to: target, options: .atomic) }
         return target
     }
     public func audioOffsets(_ id: UUID) throws -> [String: Double] {
+        guard try sessionMetadata(id).allowsAudioUse else { return [:] }
         var offsets: [String: Double] = [:]
         try JSONLines.scan(Diagnostic.self, at: folder(id).appendingPathComponent("audio-index.jsonl")) {
             if ["audio_chunk_open", "audio_chunk_first_frame"].contains($0.event), let name = $0.fields["file"],
@@ -360,6 +376,10 @@ public actor SessionStore {
             throw WLFailure.message("音频片段缺失：\(name)；无法生成完整 M4A，现存 CAF 保留")
         }
         return offsets
+    }
+    func discardIndexes(for id: UUID) {
+        if pendingSession == id { pendingSession = nil; pendingIndex = [:] }
+        if translationSession == id { translationSession = nil; translationIndex = [:] }
     }
     public nonisolated static func timestamp(_ seconds: Double) -> String {
         let total = max(0, Int(seconds)); return String(format: "%02d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)
