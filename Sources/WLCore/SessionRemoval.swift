@@ -8,7 +8,7 @@ extension SessionStore {
     func isDeleted(_ id: UUID) -> Bool { FileManager.default.fileExists(atPath: deletionMarker(id).path) }
     func checkedFolder(_ id: UUID) throws -> URL {
         let directory = folder(id)
-        guard directory.resolvingSymlinksInPath().deletingLastPathComponent() == root.resolvingSymlinksInPath() else {
+        guard directory.resolvingSymlinksInPath().deletingLastPathComponent().path == root.resolvingSymlinksInPath().path else {
             throw WLFailure.message("课堂文件路径无效")
         }
         return directory
@@ -29,6 +29,12 @@ extension SessionStore {
     private func requireStopped(_ session: LectureSession) throws {
         guard [.stopped, .recovered].contains(session.state) else { throw WLFailure.message("请先结束录课并等待保存完成") }
     }
+    private func ensureDirectory(_ directory: URL) throws {
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory) {
+            guard isDirectory.boolValue else { throw WLFailure.message("目录位置已被文件占用") }
+        } else { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false) }
+    }
     /// The actor fences every writer before removing any files. Repeating a deletion is safe.
     public func deleteSession(_ id: UUID) throws {
         try prepare()
@@ -36,10 +42,10 @@ extension SessionStore {
         if !isDeleted(id) {
             try requireStopped(sessionMetadata(id))
             let marker = deletionMarker(id), parent = marker.deletingLastPathComponent()
-            guard parent.resolvingSymlinksInPath().deletingLastPathComponent() == root.resolvingSymlinksInPath() else {
+            guard parent.resolvingSymlinksInPath().deletingLastPathComponent().path == root.resolvingSymlinksInPath().path else {
                 throw WLFailure.message("删除标记路径无效")
             }
-            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+            try ensureDirectory(parent)
             try Data().write(to: marker, options: .atomic)
         }
         discardIndexes(for: id)
@@ -52,7 +58,7 @@ extension SessionStore {
         let directory = try checkedFolder(id)
         for location in [directory, directory.appendingPathComponent("Exports", isDirectory: true)] {
             let expected = location == directory ? directory.resolvingSymlinksInPath() : directory.resolvingSymlinksInPath().appendingPathComponent("Exports", isDirectory: true)
-            guard location.resolvingSymlinksInPath() == expected else {
+            guard location.resolvingSymlinksInPath().path == expected.path else {
                 throw WLFailure.message("录音清理路径无效")
             }
             guard FileManager.default.fileExists(atPath: location.path) else { continue }
@@ -76,10 +82,10 @@ extension SessionStore {
         let session = try sessionMetadata(id)
         if audio && !session.allowsAudioUse { throw WLFailure.message("录音已清理，无法导出音频") }
         let directory = folder(id).appendingPathComponent("Exports", isDirectory: true)
-        guard directory.resolvingSymlinksInPath().deletingLastPathComponent() == folder(id).resolvingSymlinksInPath() else {
+        guard directory.resolvingSymlinksInPath().deletingLastPathComponent().path == folder(id).resolvingSymlinksInPath().path else {
             throw WLFailure.message("导出文件路径无效")
         }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        try ensureDirectory(directory)
         return directory
     }
     /// Called before queue recovery, including an interrupted removal with partial files left.
@@ -87,7 +93,7 @@ extension SessionStore {
         var issues: [String] = []
         let markers = root.appendingPathComponent(".deleted", isDirectory: true)
         if FileManager.default.fileExists(atPath: markers.path) {
-            guard markers.resolvingSymlinksInPath().deletingLastPathComponent() == root.resolvingSymlinksInPath() else {
+            guard markers.resolvingSymlinksInPath().deletingLastPathComponent().path == root.resolvingSymlinksInPath().path else {
                 throw WLFailure.message("删除标记路径无效")
             }
             for marker in try FileManager.default.contentsOfDirectory(at: markers, includingPropertiesForKeys: nil) {

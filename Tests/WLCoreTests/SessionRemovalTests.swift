@@ -33,7 +33,7 @@ final class SessionRemovalTests: XCTestCase {
         let entry = UsageEntry(scope: .live, model: "test")
         await rejects { try await store.save(session) }
         await rejects { try await store.append(segment, session: session.id) }
-        await rejects { _ = try await store.translationSnapshot(segment, session: session.id) }
+        let staleSnapshot = try await store.translationSnapshot(segment, session: session.id); XCTAssertNil(staleSnapshot)
         await rejects { _ = try await store.pending(session.id) }
         await rejects { try await store.saveNote(LectureNote(offset: 2, text: "late"), session: session.id) }
         await rejects { _ = try await store.saveContent(document) }
@@ -102,7 +102,7 @@ final class SessionRemovalTests: XCTestCase {
         var clearing = LectureSession(course: "FINN3001"); clearing.state = .stopped; clearing.audioStorage = .clearing
         clearing.updateRecordingDuration(12); try await store.save(clearing)
         try Data([1]).write(to: store.folder(clearing.id).appendingPathComponent("remaining.caf"))
-        let reopened = SessionStore(root: root); let issues = try await reopened.recover(); XCTAssertTrue(issues.isEmpty)
+        let reopened = SessionStore(root: root); let issues = try await reopened.recover(); XCTAssertTrue(issues.isEmpty, issues.joined(separator: "\n"))
         let sessions = try await reopened.sessions(); XCTAssertEqual(sessions.map(\.id), [clearing.id])
         XCTAssertEqual(sessions.first?.audioStorage, .cleared); XCTAssertEqual(sessions.first?.duration, 12)
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.folder(deleted.id).path))

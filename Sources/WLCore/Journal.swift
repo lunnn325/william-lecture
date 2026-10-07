@@ -127,6 +127,7 @@ public actor SessionStore {
         translationIndex = index; translationSession = session
     }
     public func translationSnapshot(_ source: TranscriptSegment, session: UUID) throws -> TranscriptSegment? {
+        guard !isDeleted(session), FileManager.default.fileExists(atPath: folder(session).appendingPathComponent("session.json").path) else { return nil }
         try loadTranslationIndex(session)
         guard let current = translationIndex[source.id], current.sourceRevision == source.sourceRevision,
               current.english == source.english else { return nil }
