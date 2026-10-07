@@ -151,12 +151,12 @@ struct LessonDetailView: View {
                         Task { removal = await LibraryRemovalRequest.prepare(session, audioOnly: false, store: controller.store) }
                     }.disabled(!controller.libraryActionsAllowed)
                 } label: { Image(systemName: "ellipsis") }.accessibilityLabel("课堂菜单").accessibilityIdentifier("lesson-menu")
+                    .alert("课堂名称", isPresented: $renaming) {
+                        TextField("名称", text: $name)
+                        Button("取消", role: .cancel) {}
+                        Button("保存") { Task { do { try await controller.store.rename(session.id, title: name); await load(); await controller.refreshHistory() } catch { self.error = error.localizedDescription } } }
+                    }
             }
-        }
-        .alert("课堂名称", isPresented: $renaming) {
-            TextField("名称", text: $name)
-            Button("取消", role: .cancel) {}
-            Button("保存") { Task { do { try await controller.store.rename(session.id, title: name); await load(); await controller.refreshHistory() } catch { self.error = error.localizedDescription } } }
         }
         .sheet(isPresented: $export) { ExportView(session: session) }
         .sheet(isPresented: $sharing) {
@@ -186,7 +186,7 @@ struct LessonDetailView: View {
                 Text("·"); Text(SessionStore.readingTime(session.duration)).monospacedDigit()
                 if !notes.isEmpty { Text("· \(notes.filter(\.marked).count) 个标记") }
             }.font(.caption).foregroundStyle(Color.williamSecondary)
-            if session.state == .recovered { Text("已恢复，末尾录音需核对").font(.footnote).foregroundStyle(Color.williamWarning) }
+            if session.state == .recovered { Text(session.allowsAudioUse ? "已恢复，末尾录音需核对" : "已恢复").font(.footnote).foregroundStyle(Color.williamWarning) }
             if totals.total > 0 || totals.unknown > 0 {
                 Button { showUsage.toggle() } label: {
                     Text(totals.total == 0 ? "用量未返回" : "\(totals.total.formatted()) tokens\(totals.unknown > 0 ? " · 部分用量未返回" : "")").font(.caption).foregroundStyle(Color.williamSecondary)
@@ -336,8 +336,11 @@ struct LessonDetailView: View {
             .frame(width: 1000).padding(30).background(Color.white).environment(\.colorScheme, .light))
         renderer.scale = 1.5
         guard let data = renderer.uiImage?.pngData() else { error = "图片未生成"; return }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("WL-map-\(UUID()).png")
-        do { try data.write(to: url, options: .atomic); shareFiles = [url, try await controller.store.exportStudy(session.id)]; sharing = true }
+        do {
+            let folder = try await controller.store.exportDirectory(session.id)
+            let url = folder.appendingPathComponent("WL-map-\(UUID()).png")
+            try data.write(to: url, options: .atomic); shareFiles = [url, try await controller.store.exportStudy(session.id)]; sharing = true
+        }
         catch { self.error = error.localizedDescription }
     }
 }

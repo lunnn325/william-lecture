@@ -11,6 +11,8 @@ import UIKit
         XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 5)); app.alerts.buttons["取消"].tap()
         XCTAssertTrue(card.exists); card.tap()
         let play = app.buttons["play-lecture"]; XCTAssertTrue(play.waitForExistence(timeout: 10)); waitEnabled(play); play.tap()
+        app.buttons["lesson-menu"].tap(); app.buttons["修改名称"].tap()
+        XCTAssertTrue(app.alerts["课堂名称"].waitForExistence(timeout: 5)); app.alerts.buttons["取消"].tap()
         app.buttons["lesson-menu"].tap(); app.buttons["清理录音"].tap()
         XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 5)); app.alerts.buttons["清理录音"].tap()
         XCTAssertTrue(app.staticTexts["audio-cleared"].waitForExistence(timeout: 10)); XCTAssertFalse(play.exists)

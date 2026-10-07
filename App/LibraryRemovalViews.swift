@@ -38,14 +38,16 @@ struct LibraryRemovalConfirmation: ViewModifier {
                         .padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
-            .alert(request?.title ?? "课堂记录", isPresented: Binding(get: { request != nil }, set: { if !$0 { request = nil } }), presenting: request) { value in
-                Button("取消", role: .cancel) { request = nil }
-                Button(value.action, role: .destructive) { perform(value) }.disabled(!controller.libraryActionsAllowed)
-            } message: { value in Text(value.message) }
-            .alert("操作未完成", isPresented: Binding(get: { !failure.isEmpty }, set: { if !$0 { failure = "" } })) {
-                Button("关闭", role: .cancel) { failure = "" }
-                Button("重试") { if let retry { failure = ""; perform(retry) } }.disabled(!controller.libraryActionsAllowed)
-            } message: { Text(failure) }
+            .alert(failure.isEmpty ? request?.title ?? "课堂记录" : "操作未完成", isPresented: Binding(
+                get: { request != nil || !failure.isEmpty }, set: { if !$0 { request = nil; failure = "" } })) {
+                if !failure.isEmpty {
+                    Button("关闭", role: .cancel) { failure = "" }
+                    Button("重试") { if let retry { failure = ""; perform(retry) } }.disabled(!controller.libraryActionsAllowed)
+                } else if let value = request {
+                    Button("取消", role: .cancel) { request = nil }
+                    Button(value.action, role: .destructive) { perform(value) }.disabled(!controller.libraryActionsAllowed)
+                }
+            } message: { Text(failure.isEmpty ? request?.message ?? "" : failure) }
     }
     private func perform(_ value: LibraryRemovalRequest) {
         request = nil; retry = value
