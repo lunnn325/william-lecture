@@ -44,12 +44,7 @@ struct CaptionTextView: View {
     @ScaledMetric(relativeTo: .body) private var chineseSize = 22.0
     @ScaledMetric(relativeTo: .body) private var englishSize = 17.0
     private var missingChinese: String {
-        switch caption.phase {
-        case .transcribing: return "…"
-        case .gptTranslating: return "翻译处理中"
-        case .failed: return "翻译未完成"
-        default: return "等待翻译"
-        }
+        "…"
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {

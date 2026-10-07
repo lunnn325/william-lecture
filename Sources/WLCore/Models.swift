@@ -80,6 +80,7 @@ public struct TranscriptSegment: Codable, Identifiable, Sendable, Equatable {
     /// Ordered actor commits, independent of request timestamps and callback delivery.
     public var translationUpdate: Int?
     public var sourceRevision: Int { max(1, revision ?? 1) }
+    public var prefersLocalOnly: Bool { localEnabled == true && ShortUtterance.localOnly(english) }
     public var validLocalChinese: String? {
         guard localRevision == sourceRevision, CaptionSource.normalized(localSourceText ?? "") == CaptionSource.normalized(english),
               let localChinese, !localChinese.isEmpty else { return nil }
@@ -96,7 +97,7 @@ public struct TranscriptSegment: Codable, Identifiable, Sendable, Equatable {
     public var exportChinese: String? { finalChinese ?? validLocalChinese ?? (status == .mock ? chinese : nil) }
     public var phase: CaptionPhase {
         if finalChinese != nil { return .final }
-        if validLocalChinese != nil && (status == .failed || gptDeferred == true || error != nil) { return .localOnly }
+        if validLocalChinese != nil && (prefersLocalOnly || status == .failed || gptDeferred == true || error != nil) { return .localOnly }
         if status == .pending && error == nil && submittedAt != nil && gptRequestID != nil { return .gptTranslating }
         if validLocalChinese != nil { return .localDraft }
         return status == .failed || error != nil ? .failed : .queuedForGPT

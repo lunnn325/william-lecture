@@ -158,9 +158,9 @@ final class TranslationTests: XCTestCase {
         let paused = expectation(description: "Three attempts exhausted")
         let done = expectation(description: "Restored network completes backlog")
         worker.onUpdate = { segment in
-            if segment.status == .pending && segment.error != nil { paused.fulfill() }
             if segment.status == .completed { done.fulfill() }
         }
+        worker.onBlocked = { if $0 { paused.fulfill() } }
         worker.kick(); await fulfillment(of: [paused], timeout: 3)
         worker.networkRestored(); await fulfillment(of: [done], timeout: 3); await worker.waitForCancellation()
         let observed = await probe.snapshot(); XCTAssertEqual(observed.counts[input[0].id], 4)

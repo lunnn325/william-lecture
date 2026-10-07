@@ -411,7 +411,8 @@ import WLAppleAudio
         if let english = LiveEnglishPreview.text(partial: realtimePartial, buffer: buffer, finalizedEnd: finalCursor.end),
            !visible.contains(where: { $0.id == buffer.pendingID }), let partial = realtimePartial {
             let draft = drafts.current
-            let chinese = draft?.id == buffer.pendingID && draft?.english == english ? draft?.chinese : nil
+            let translated = draft?.id == buffer.pendingID && draft?.english == english ? draft?.chinese : nil
+            let chinese = translated ?? (localEnabled && mode != .mock ? ShortUtterance.draft(english) : nil)
             return WorkspaceCaption(id: buffer.pendingID, start: buffer.pendingStart ?? partial.start,
                                     english: english, chinese: chinese, provisional: true)
         }

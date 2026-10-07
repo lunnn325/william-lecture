@@ -98,6 +98,9 @@ public final class Translator: @unchecked Sendable {
     private var wakeRequested = false
     private var newestNext = false
     private var retryWake: Task<Void, Never>?
+    private var segmentRetryWake: Task<Void, Never>?
+    private var retryAfter: [UUID: Date] = [:]
+    private var retryAttempts: [UUID: Int] = [:]
     private var automaticWakeCount = 0
     private let store: SessionStore
     private let config: TranslatorConfiguration
@@ -123,7 +126,11 @@ public final class Translator: @unchecked Sendable {
     }
 
     public func kick(force: Bool = false) {
-        if force { retryWake?.cancel(); retryWake = nil; suspended = false; manuallyCancelled = false; onBlocked?(false) }
+        if force {
+            retryWake?.cancel(); retryWake = nil; segmentRetryWake?.cancel(); segmentRetryWake = nil
+            retryAfter.removeAll(); retryAttempts.removeAll()
+            suspended = false; manuallyCancelled = false; onBlocked?(false)
+        }
         guard !suspended else { return }
         if pump != nil { wakeRequested = true; return }
         pump = Task { [weak self] in
@@ -134,6 +141,7 @@ public final class Translator: @unchecked Sendable {
     }
     public func cancel() {
         manuallyCancelled = true; suspended = true; wakeRequested = false; pump?.cancel(); retryWake?.cancel(); retryWake = nil
+        segmentRetryWake?.cancel(); segmentRetryWake = nil; retryAfter.removeAll(); retryAttempts.removeAll()
         for task in requests.values { task.cancel() }
     }
     public func networkRestored() {
@@ -154,8 +162,8 @@ public final class Translator: @unchecked Sendable {
             while !suspended && requests.count < maxConcurrent {
                 try Task.checkCancellation()
                 guard let segment = try await store.pending(session.id, limit: 1,
-                    excluding: Set(requests.keys), newestFirst: newestNext).first else {
-                    if requests.isEmpty { onState?("翻译已跟上") }
+                    excluding: Set(requests.keys).union(retryAfter.keys), newestFirst: newestNext).first else {
+                    if requests.isEmpty && retryAfter.isEmpty { onState?("翻译已跟上") }
                     return
                 }
                 // An actor hop can allow cancellation or another request to finish.
@@ -176,78 +184,86 @@ public final class Translator: @unchecked Sendable {
         var segment = original
         var token: UUID?
         do {
-            for attempt in 1...3 {
-                try Task.checkCancellation()
-                let request = UUID(); token = request
-                guard let begun = try await store.beginGPT(original, session: session.id, request: request, at: Date()) else {
-                    stale(original, kind: "start"); return
+            let attempt = (retryAttempts[original.id] ?? 0) + 1
+            try Task.checkCancellation()
+            let request = UUID(); token = request
+            guard let begun = try await store.beginGPT(original, session: session.id, request: request, at: Date()) else {
+                stale(original, kind: "start"); return
+            }
+            segment = begun
+            try Task.checkCancellation()
+            onUpdate?(segment)
+            let submittedAt = segment.submittedAt!
+            let queuedAt = segment.queuedAt ?? segment.receivedAt
+            record(Diagnostic("translation_request", offset: segment.end, fields: [
+                "segment": segment.id.uuidString, "attempt": "\(attempt)", "mock": "\(config.mock)",
+                "model": config.model, "queue_ms": "\(Self.ms(submittedAt.timeIntervalSince(queuedAt)))",
+                "buffer_ms": "\(Self.ms(queuedAt.timeIntervalSince(segment.receivedAt)))",
+                "in_flight": "\(requests.count)"
+            ], at: submittedAt))
+            onState?(config.mock ? "模拟翻译中" : "GPT 翻译中（最多 2 段并行）")
+            let requestSegment = segment
+            do {
+                let text = try await operation(segment) { [weak self] part in
+                    await self?.stream(part, segment: requestSegment)
                 }
-                segment = begun
                 try Task.checkCancellation()
-                onUpdate?(segment)
-                let submittedAt = segment.submittedAt!
-                let queuedAt = segment.queuedAt ?? segment.receivedAt
-                record(Diagnostic("translation_request", offset: segment.end, fields: [
-                    "segment": segment.id.uuidString, "attempt": "\(attempt)", "mock": "\(config.mock)",
-                    "model": config.model, "queue_ms": "\(Self.ms(submittedAt.timeIntervalSince(queuedAt)))",
-                    "buffer_ms": "\(Self.ms(queuedAt.timeIntervalSince(segment.receivedAt)))",
-                    "in_flight": "\(requests.count)"
-                ], at: submittedAt))
-                onState?(config.mock ? "模拟翻译中" : "GPT 翻译中（最多 2 段并行）")
-                let requestSegment = segment
-                do {
-                    let text = try await operation(segment) { [weak self] part in
-                        await self?.stream(part, segment: requestSegment)
-                    }
-                    try Task.checkCancellation()
-                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw TranslationResponseFailure.incomplete }
-                    segment.chinese = text; segment.firstTranslationAt = streamingFirst.removeValue(forKey: segment.id)
-                    segment.completedAt = Date(); segment.status = config.mock ? .mock : .completed
-                    guard let merged = try await store.applyGPT(segment, session: session.id, request: request, status: segment.status,
-                        chinese: text, firstAt: segment.firstTranslationAt, completedAt: segment.completedAt) else {
-                        streamingText.removeValue(forKey: segment.id); stale(segment, kind: "completed"); return
-                    }
-                    segment = merged
-                    streamingText.removeValue(forKey: segment.id); onUpdate?(segment)
-                    automaticWakeCount = 0
-                    var completionFields = [
-                        "segment": segment.id.uuidString, "mock": "\(config.mock)",
-                        "request_ms": "\(Self.ms(segment.completedAt!.timeIntervalSince(submittedAt)))"
-                    ]
-                    if let endDate = segment.audioEndDate(in: session) {
-                        completionFields["speech_end_to_complete_ms"] = "\(Self.ms(segment.completedAt!.timeIntervalSince(endDate)))"
-                    }
-                    record(Diagnostic("translation_completed", offset: segment.end, fields: completionFields, at: segment.completedAt!))
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw TranslationResponseFailure.incomplete }
+                segment.chinese = text; segment.firstTranslationAt = streamingFirst.removeValue(forKey: segment.id)
+                segment.completedAt = Date(); segment.status = config.mock ? .mock : .completed
+                guard let merged = try await store.applyGPT(segment, session: session.id, request: request, status: segment.status,
+                    chinese: text, firstAt: segment.firstTranslationAt, completedAt: segment.completedAt) else {
+                    streamingText.removeValue(forKey: segment.id); stale(segment, kind: "completed"); return
+                }
+                segment = merged
+                streamingText.removeValue(forKey: segment.id); onUpdate?(segment)
+                retryAttempts.removeValue(forKey: segment.id)
+                automaticWakeCount = 0
+                var completionFields = [
+                    "segment": segment.id.uuidString, "mock": "\(config.mock)",
+                    "request_ms": "\(Self.ms(segment.completedAt!.timeIntervalSince(submittedAt)))"
+                ]
+                if let endDate = segment.audioEndDate(in: session) {
+                    completionFields["speech_end_to_complete_ms"] = "\(Self.ms(segment.completedAt!.timeIntervalSince(endDate)))"
+                }
+                record(Diagnostic("translation_completed", offset: segment.end, fields: completionFields, at: segment.completedAt!))
+                return
+            } catch {
+                streamingText.removeValue(forKey: segment.id); streamingFirst.removeValue(forKey: segment.id)
+                if Task.isCancelled { throw CancellationError() }
+                let retryable = (error as? APIError)?.retryable ?? (error is URLError)
+                let contentRetry = (error as? TranslationResponseFailure) == .incomplete
+                segment.error = error.localizedDescription
+                record(Diagnostic("translation_error", offset: segment.end, fields: [
+                    "segment": segment.id.uuidString, "error": error.localizedDescription, "attempt": "\(attempt)"
+                ]))
+                if (retryable || contentRetry) && attempt < 3 {
+                    let delay = max(0, min(30, (error as? APIError)?.retryAfter ?? pow(2, Double(attempt))))
+                    guard let merged = try await store.applyGPT(segment, session: session.id, request: request,
+                        status: .pending, error: segment.error) else { stale(segment, kind: "retry"); return }
+                    onUpdate?(merged)
+                    retryAttempts[segment.id] = attempt
+                    retryAfter[segment.id] = Date().addingTimeInterval(delay)
+                    scheduleSegmentRetry()
+                    onState?("翻译暂不可用；已保留英文待处理")
+                    // Release the request slot during backoff; later captions keep moving.
                     return
-                } catch {
-                    streamingText.removeValue(forKey: segment.id); streamingFirst.removeValue(forKey: segment.id)
-                    if Task.isCancelled { throw CancellationError() }
-                    let retryable = (error as? APIError)?.retryable ?? (error is URLError)
-                    let contentRetry = (error as? TranslationResponseFailure) == .incomplete
-                    segment.error = error.localizedDescription
-                    record(Diagnostic("translation_error", offset: segment.end, fields: [
-                        "segment": segment.id.uuidString, "error": error.localizedDescription, "attempt": "\(attempt)"
-                    ]))
-                    if (retryable || contentRetry) && attempt < 3 {
-                        let delay = max(0, min(30, (error as? APIError)?.retryAfter ?? pow(2, Double(attempt))))
-                        onState?("翻译暂不可用；已保留英文待处理")
-                        try await Task.sleep(for: .seconds(delay))
-                    } else {
-                        segment.status = retryable ? .pending : .failed
-                        guard let merged = try await store.applyGPT(segment, session: session.id, request: request,
-                            status: segment.status, error: segment.error) else { stale(segment, kind: "error"); return }
-                        segment = merged
-                        onUpdate?(segment)
-                        // Transport/account failures affect the queue; a refused, empty or
-                        // malformed single response affects this segment only.
-                        let global = retryable || error is APIError
-                        if global {
-                            suspended = true; automaticRetryAllowed = retryable; onBlocked?(true)
-                            onState?("翻译暂停：\(segment.error ?? "未知错误")；可点击补翻译")
-                            if retryable { scheduleRecovery() }
-                        } else { onState?("一段翻译未完成；后续字幕继续，可补翻译") }
-                        return
-                    }
+                } else {
+                    retryAttempts.removeValue(forKey: segment.id)
+                    segment.status = retryable ? .pending : .failed
+                    guard let merged = try await store.applyGPT(segment, session: session.id, request: request,
+                        status: segment.status, error: segment.error) else { stale(segment, kind: "error"); return }
+                    segment = merged
+                    onUpdate?(segment)
+                    // Transport/account failures affect the queue; a refused, empty or
+                    // malformed single response affects this segment only.
+                    let global = retryable || error is APIError
+                    if global {
+                        suspended = true; automaticRetryAllowed = retryable; onBlocked?(true)
+                        onState?("翻译暂停：\(segment.error ?? "未知错误")；可点击补翻译")
+                        if retryable { scheduleRecovery() }
+                    } else { onState?("一段翻译未完成；后续字幕继续，可补翻译") }
+                    return
                 }
             }
         } catch is CancellationError {
@@ -256,6 +272,16 @@ public final class Translator: @unchecked Sendable {
             onState?("翻译取消；待处理英文已保存")
         } catch {
             suspended = true; onBlocked?(true); onState?("翻译队列：\(error.localizedDescription)")
+        }
+    }
+    private func scheduleSegmentRetry() {
+        segmentRetryWake?.cancel()
+        guard !manuallyCancelled, let next = retryAfter.values.min() else { segmentRetryWake = nil; return }
+        segmentRetryWake = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(max(0, next.timeIntervalSinceNow))) } catch { return }
+            guard let self, !manuallyCancelled else { return }
+            retryAfter = retryAfter.filter { $0.value > Date() }
+            segmentRetryWake = nil; kick(); scheduleSegmentRetry()
         }
     }
     private func scheduleRecovery() {

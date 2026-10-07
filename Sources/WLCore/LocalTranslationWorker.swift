@@ -37,6 +37,7 @@ public enum LocalProviderFailure: Error, LocalizedError, Sendable, Equatable {
     private var newestStable = true
     private var foreground = true
     private var disabled = false
+    private var recovering = false
     private var wakeRequested = false
     public var resourceCounts: (running: Int, pendingDraft: Int) { (running == nil ? 0 : 1, pendingDraft == nil ? 0 : 1) }
 
@@ -71,12 +72,12 @@ public enum LocalProviderFailure: Error, LocalizedError, Sendable, Equatable {
     public func kick() {
         guard !disabled else { return }
         if pump != nil { wakeRequested = true; return }
-        guard running == nil else { return }
+        guard running == nil, !recovering else { return }
         pump = Task { [weak self] in
             guard let self else { return }
             do {
                 let stable = try await store.localPending(session, newestFirst: newestStable)
-                guard !disabled, !Task.isCancelled, running == nil else { pump = nil; return }
+                guard !disabled, !Task.isCancelled, running == nil, !recovering else { pump = nil; return }
                 let readyDraft = foreground && pendingDraft != nil && (draftReadyAt?.timeIntervalSinceNow ?? 1) <= 0
                 if readyDraft && (wantsDraft || stable == nil), let draft = pendingDraft {
                     clearDraft(); lastDraft = draft; lastDraftAt = Date(); wantsDraft = false
@@ -105,7 +106,7 @@ public enum LocalProviderFailure: Error, LocalizedError, Sendable, Equatable {
         running = Task { [weak self] in
             guard let self else { return }
             do {
-                let text = try await operation(english)
+                let text = try await translate(english)
                 let at = Date()
                 guard !disabled, !Task.isCancelled, activeID == request else { finish(request); return }
                 timeout?.cancel()
@@ -144,14 +145,25 @@ public enum LocalProviderFailure: Error, LocalizedError, Sendable, Equatable {
         timeout = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(self?.deadlineSeconds ?? 4)) } catch { return }
             guard let self, activeID == request, running != nil else { return }
-            disabled = true; clearDraft(); running?.cancel()
-            onState?("本机翻译超时；录音/GPT 继续，稍后可重试")
+            recovering = true; lastDraft = nil; running?.cancel()
+            onState?("本机翻译超时；录音继续，正在恢复")
             record(Diagnostic("local_translation_timeout", offset: offset, fields: fields))
             if let stable, let merged = try? await store.applyLocal(stable, session: session, request: request,
                 chinese: nil, at: Date(), error: "本机翻译超时") { onUpdate?(merged) }
             await cancelOperation()
             // running remains occupied until the underlying operation actually returns.
+            recovering = false; timeout = nil; kick()
         }
+    }
+    private func translate(_ english: String) async throws -> String {
+        if !mock, let draft = ShortUtterance.draft(english) { return draft }
+        for attempt in 0..<2 {
+            try Task.checkCancellation()
+            let text = try await operation(english)
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return text }
+            if attempt == 0 { try await Task.sleep(for: .milliseconds(150)) }
+        }
+        throw WLFailure.message("本机翻译返回空内容")
     }
     private func promoteFinalizedDraft(_ draft: DraftTranslationRequest, text: String, request: UUID, at: Date) async throws -> TranscriptSegment? {
         // A final may arrive while the exact same partial request is in flight.
@@ -166,7 +178,8 @@ public enum LocalProviderFailure: Error, LocalizedError, Sendable, Equatable {
     }
     private func finish(_ request: UUID) {
         guard activeID == request else { return }
-        timeout?.cancel(); timeout = nil; running = nil; activeID = nil; activeStable = nil
+        if !recovering { timeout?.cancel(); timeout = nil }
+        running = nil; activeID = nil; activeStable = nil
         kick()
     }
     public func shutdown() async {

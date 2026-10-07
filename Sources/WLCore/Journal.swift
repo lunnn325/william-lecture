@@ -115,7 +115,7 @@ public actor SessionStore {
         try JSONLines.append(segment, to: folder(session).appendingPathComponent("transcript.jsonl"))
         if translationSession == session { translationIndex[segment.id] = segment }
         if pendingSession == session {
-            if segment.status == .pending || segment.status == .failed { pendingIndex[segment.id] = segment }
+            if !segment.prefersLocalOnly && (segment.status == .pending || segment.status == .failed) { pendingIndex[segment.id] = segment }
             else { pendingIndex.removeValue(forKey: segment.id) }
         }
     }
@@ -235,13 +235,13 @@ public actor SessionStore {
         if pendingSession != id {
             var index: [UUID: TranscriptSegment] = [:]
             try JSONLines.scan(TranscriptSegment.self, at: folder(id).appendingPathComponent("transcript.jsonl")) {
-                if $0.status == .pending || $0.status == .failed { index[$0.id] = $0 }
+                if !$0.prefersLocalOnly && ($0.status == .pending || $0.status == .failed) { index[$0.id] = $0 }
                 else { index.removeValue(forKey: $0.id) }
             }
             pendingIndex = index; pendingSession = id
         }
         let candidates = pendingIndex.values.filter {
-            !excluding.contains($0.id) && ($0.status == .pending || (retryFailed && $0.status == .failed))
+            !$0.prefersLocalOnly && !excluding.contains($0.id) && ($0.status == .pending || (retryFailed && $0.status == .failed))
         }.sorted { lhs, rhs in
             if lhs.start == rhs.start { return lhs.id.uuidString < rhs.id.uuidString }
             return newestFirst ? lhs.start > rhs.start : lhs.start < rhs.start
