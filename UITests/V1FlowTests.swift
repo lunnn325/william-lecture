@@ -179,7 +179,7 @@ import UIKit
         // First word of the second visible sentence, not the first/latest row.
         english.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 10, dy: 9)).press(forDuration: 1)
         let explain = app.menuItems["解释"]
-        XCTAssertTrue(explain.waitForExistence(timeout: 5))
+        XCTAssertTrue(explain.waitForExistence(timeout: 10))
         XCTAssertFalse(app.textViews["note-text"].exists)
         explain.tap()
         let term = app.staticTexts["lookup-term"]

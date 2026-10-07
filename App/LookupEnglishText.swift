@@ -26,12 +26,16 @@ struct LookupEnglishText: UIViewRepresentable {
     }
     func updateUIView(_ view: LookupTextView, context: Context) {
         context.coordinator.parent = self
-        let source = lookup.owner == owner && lookup.focusedCaption == caption.id ? lookup.frozenEnglish : caption.english
+        let focused = lookup.owner == owner && lookup.focusedCaption == caption.id
+        let source = focused ? lookup.frozenEnglish : caption.english
         let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 4
         let text = NSAttributedString(string: source, attributes: [
-            .font: UIFont.systemFont(ofSize: fontSize), .foregroundColor: UIColor(Color.williamSecondary), .paragraphStyle: paragraph
+            .font: UIFont.systemFont(ofSize: fontSize), .foregroundColor: UIColor(Color.williamSecondary).resolvedColor(with: view.traitCollection), .paragraphStyle: paragraph
         ])
-        if !view.attributedText.isEqual(to: text) {
+        // SwiftUI-backed dynamic UIColor providers can compare unequal on a
+        // caption update. Reassigning attributedText revokes UIKit's selection.
+        // Freeze attributes as well as source during lookup; refresh on close.
+        if view.text != source || (!focused && !view.attributedText.isEqual(to: text)) {
             context.coordinator.updating = true; view.attributedText = text; context.coordinator.updating = false
         }
         view.accessibilityIdentifier = "caption-english-\(caption.id.uuidString)"
