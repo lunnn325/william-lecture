@@ -124,7 +124,9 @@ public enum LocalProviderFailure: Error, LocalizedError, Sendable, Equatable {
         running = Task { [weak self] in
             guard let self else { return }
             do {
-                let text = try await translate(english)
+                let contextSource = stable ?? TranscriptSegment(start: draft!.start, end: draft!.end, english: english)
+                let context = (try? await store.englishContext(contextSource, session: session)) ?? ""
+                let text = try await translate(english, context: context)
                 let at = Date()
                 guard !disabled, !Task.isCancelled, activeID == request else { finish(request); return }
                 timeout?.cancel()
@@ -176,8 +178,8 @@ public enum LocalProviderFailure: Error, LocalizedError, Sendable, Equatable {
             recovering = false; timeout = nil; scheduleRecovery(); kick()
         }
     }
-    private func translate(_ english: String) async throws -> String {
-        if !mock, let draft = ShortUtterance.draft(english) { return draft }
+    private func translate(_ english: String, context: String) async throws -> String {
+        if !mock, let draft = ShortUtterance.draft(english, context: context) { return draft }
         for attempt in 0..<2 {
             try Task.checkCancellation()
             let text = try await operation(english)

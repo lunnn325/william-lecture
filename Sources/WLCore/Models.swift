@@ -77,6 +77,13 @@ public struct TranscriptSegment: Codable, Identifiable, Sendable, Equatable {
     public var gptRevision: Int?
     public var gptRequestID: UUID?
     public var gptDeferred: Bool?
+    public var gptEnglish: String?
+    public var gptEnglishRevision: Int?
+    public var finalEnglish: String? {
+        guard finalChinese != nil, gptEnglishRevision == sourceRevision else { return nil }
+        return gptEnglish
+    }
+    public var displayEnglish: String { finalEnglish ?? english }
     /// Ordered actor commits, independent of request timestamps and callback delivery.
     public var translationUpdate: Int?
     public var sourceRevision: Int { max(1, revision ?? 1) }
@@ -120,6 +127,7 @@ public struct TranscriptSegment: Codable, Identifiable, Sendable, Equatable {
             (prior.submittedAt ?? .distantPast) > (submittedAt ?? .distantPast) {
             merged.chinese = prior.chinese; merged.status = prior.status; merged.error = prior.error
             merged.gptRevision = prior.gptRevision; merged.gptRequestID = prior.gptRequestID
+            merged.gptEnglish = prior.gptEnglish; merged.gptEnglishRevision = prior.gptEnglishRevision
             merged.submittedAt = prior.submittedAt; merged.firstTranslationAt = prior.firstTranslationAt
             merged.completedAt = prior.completedAt; merged.attempts = prior.attempts
         } else if status == .pending, error == nil, chinese == nil, gptRequestID == prior.gptRequestID {

@@ -3,6 +3,43 @@ import UIKit
 
 @MainActor final class V1FlowTests: XCTestCase {
     override func setUp() { super.setUp(); continueAfterFailure = false; XCUIDevice.shared.orientation = .portrait }
+    func testManualSummaryDoesNotStopClassroomControls() {
+        let app = launch(active: true, extra: ["--wl-live-arrival"])
+        app.buttons["summarize-current"].tap()
+        let result = app.staticTexts["live-summary-result"]
+        XCTAssertTrue(result.waitForExistence(timeout: 5)); XCTAssertTrue(result.label.contains("[MOCK]"))
+        capture(app, "manual-summary")
+        app.buttons["完成"].firstMatch.tap()
+        app.buttons["fixture-append-caption"].tap()
+        let latest = app.textViews["caption-english-20000000-0000-0000-0000-000000000019"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 5))
+        app.buttons["pause-recording"].tap()
+        XCTAssertTrue(app.staticTexts["已暂停"].waitForExistence(timeout: 5))
+        app.buttons["pause-recording"].tap()
+        XCTAssertTrue(app.staticTexts["录音中"].waitForExistence(timeout: 5))
+    }
+    func testCaptionAppearancePreviewAndSavedPreferences() {
+        let app = launch(active: false)
+        func openPreferences() {
+            selectTab("设置", app: app)
+            let link = app.buttons["caption-display-settings"]
+            for _ in 0..<3 { if link.isHittable { break }; app.swipeUp() }
+            XCTAssertTrue(link.waitForExistence(timeout: 5)); link.tap()
+        }
+        openPreferences()
+        let english = app.buttons["caption-english-size-setting"]
+        XCTAssertTrue(english.waitForExistence(timeout: 5)); english.tap(); app.buttons["大"].firstMatch.tap()
+        let chinese = app.buttons["caption-chinese-size-setting"]
+        chinese.tap(); app.buttons["小"].firstMatch.tap()
+        XCTAssertTrue(app.otherElements["caption-appearance-preview"].exists || app.staticTexts["边际收益和总收益并不相同。"].exists)
+        capture(app, "caption-appearance")
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["start-recording"].waitForExistence(timeout: 20))
+        openPreferences()
+        XCTAssertTrue(english.label.contains("大") || String(describing: english.value).contains("大"))
+        XCTAssertTrue(chinese.label.contains("小") || String(describing: chinese.value).contains("小"))
+        app.buttons["恢复默认显示"].tap()
+    }
     func testReturningFromBackgroundRefreshesOldFinalsAndPreservesReader() {
         let app = launch(active: true, extra: ["--wl-background-translation"])
         let caption = app.staticTexts["caption-chinese-20000000-0000-0000-0000-000000000017"]

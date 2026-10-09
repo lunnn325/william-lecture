@@ -121,7 +121,9 @@ final class AudioRecorder: @unchecked Sendable {
         guard !recording else { return }
         guard !closing else { throw WLFailure.message("录音正在保存尾部，请稍后恢复") }
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .default, options: [])
+        // Sample-buffer PiP requires a playback-capable category. Configure once before capture;
+        // the PiP coordinator never changes the session while the microphone is running.
+        try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
         try session.setPreferredSampleRate(48_000); try session.setActive(true)
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)

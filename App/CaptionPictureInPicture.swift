@@ -17,6 +17,7 @@ private final class CaptionPlaybackState: @unchecked Sendable {
 @MainActor final class CaptionPictureInPicture: NSObject, ObservableObject, AVPictureInPictureControllerDelegate, AVPictureInPictureSampleBufferPlaybackDelegate {
     @Published private(set) var status = "已关闭"
     @Published private(set) var isActive = false
+    @Published private(set) var isReady = false
     let supported = AVPictureInPictureController.isPictureInPictureSupported()
     var onSetPlaying: ((Bool) -> Void)?
     var onDiagnostic: ((String, [String: String]) -> Void)?
@@ -32,12 +33,19 @@ private final class CaptionPlaybackState: @unchecked Sendable {
     private var chinese: String?
     private var elapsed = 0.0
     private var lastFrameAt = Date.distantPast
+    private var readiness: NSKeyValueObservation?
+    private var needsFirstFrame = true
+    private var startRequested = false
+    private var startInFlight = false
+    private var startDeadline = Date.distantPast
+    private var foreground = true
+    private var manualStart = false
     private nonisolated let playbackState = CaptionPlaybackState()
 
     func attach(_ view: CaptionVideoSurface) {
         let changedSurface = surface !== view
         surface = view
-        if changedSurface { lastFrameAt = .distantPast }
+        if changedSurface { lastFrameAt = .distantPast; needsFirstFrame = true }
         if changedSurface, let controller {
             controller.contentSource = AVPictureInPictureController.ContentSource(sampleBufferDisplayLayer: view.displayLayer, playbackDelegate: self)
         }
@@ -49,14 +57,14 @@ private final class CaptionPlaybackState: @unchecked Sendable {
                 CMTimebaseSetRate(timebase, rate: 1); view.displayLayer.controlTimebase = timebase
             }
         }
-        prepareController(); render()
+        prepareController(); render(); refreshReadiness()
     }
     func update(enabled: Bool, session: UUID?, active: Bool, recording: Bool, course: String, english: String, chinese: String?, elapsed: Double) {
         let changedClassroom = classroom != session
         self.enabled = enabled; classroom = session; hasLecture = active; playing = recording
         playbackState.set(active: enabled && active, playing: recording)
         self.course = course; self.english = english; self.chinese = chinese; self.elapsed = elapsed
-        if changedClassroom { stop(); surface?.displayLayer.flushAndRemoveImage(); lastFrameAt = .distantPast }
+        if changedClassroom { stop(); surface?.displayLayer.flushAndRemoveImage(); lastFrameAt = .distantPast; needsFirstFrame = true }
         guard enabled, active, supported else {
             stop(); timer?.cancel(); timer = nil
             controller?.canStartPictureInPictureAutomaticallyFromInline = false
@@ -70,7 +78,7 @@ private final class CaptionPlaybackState: @unchecked Sendable {
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(1)) } catch { return }
                     guard let self, enabled, hasLecture else { return }
-                    render()
+                    render(); tryPendingStart()
                 }
             }
         }
@@ -81,15 +89,51 @@ private final class CaptionPlaybackState: @unchecked Sendable {
         let pip = AVPictureInPictureController(contentSource: source)
         pip.delegate = self; pip.requiresLinearPlayback = true
         pip.canStartPictureInPictureAutomaticallyFromInline = true; controller = pip
-        status = "切换 App 时显示最新字幕"
+        readiness = pip.observe(\.isPictureInPicturePossible, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor [weak self] in self?.refreshReadiness() }
+        }
+        refreshReadiness()
     }
     func start() {
-        guard enabled, hasLecture, let controller else { return }
-        render(); controller.invalidatePlaybackState()
-        guard controller.isPictureInPicturePossible else { status = "小窗暂不可用，请稍后重试"; return }
-        if !controller.isPictureInPictureActive { controller.startPictureInPicture() }
+        guard enabled, hasLecture, supported else { return }
+        manualStart = true; requestStart()
+    }
+    func sceneChanged(_ phase: ScenePhase) {
+        if phase == .active {
+            foreground = true; stop()
+        } else {
+            foreground = false
+            // Inactive includes a cancelled Home gesture: prepare, but never clear captions.
+            render()
+            if phase == .background && enabled && hasLecture { manualStart = false; requestStart() }
+        }
+    }
+    private func requestStart() {
+        startRequested = true; startDeadline = Date().addingTimeInterval(8)
+        prepareController(); render(); controller?.invalidatePlaybackState(); tryPendingStart()
+    }
+    private func refreshReadiness() {
+        guard enabled, hasLecture else { isReady = false; return }
+        let possible = controller?.isPictureInPicturePossible == true
+        if possible != isReady {
+            isReady = possible
+            onDiagnostic?("caption_pip_readiness", ["possible": String(possible)])
+        }
+        if !isActive && !startInFlight { status = possible ? "切换 App 时显示字幕" : "小窗正在准备" }
+        tryPendingStart()
+    }
+    private func tryPendingStart() {
+        guard startRequested, !startInFlight, enabled, hasLecture, !foreground || manualStart else { return }
+        if Date() > startDeadline {
+            startRequested = false; status = "小窗暂不可用，请重试"
+            onDiagnostic?("caption_pip_start_timeout", [:]); return
+        }
+        guard let controller, controller.isPictureInPicturePossible, surface?.window != nil else { return }
+        if controller.isPictureInPictureActive { startRequested = false; return }
+        startInFlight = true; controller.startPictureInPicture()
     }
     func stop() {
+        startRequested = false; manualStart = false
         if controller?.isPictureInPictureActive == true { controller?.stopPictureInPicture() }
     }
     private func render() {
@@ -125,8 +169,12 @@ private final class CaptionPlaybackState: @unchecked Sendable {
             if let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true) as? [NSMutableDictionary] {
                 attachments.first?[kCMSampleAttachmentKey_DisplayImmediately] = true
             }
-            if layer.status == .failed { layer.flush() }
-            if layer.isReadyForMoreMediaData { layer.enqueue(sample) }
+            if layer.status == .failed {
+                onDiagnostic?("caption_pip_render_error", ["error": layer.error?.localizedDescription ?? "未知错误"])
+                layer.flush(); needsFirstFrame = true
+            }
+            // Initial readiness can depend on receiving the first real frame.
+            if needsFirstFrame || layer.isReadyForMoreMediaData { layer.enqueue(sample); needsFirstFrame = false }
         }
     }
     private func draw(_ text: String, rect: CGRect, size: CGFloat, color: UIColor) {
@@ -150,21 +198,24 @@ private final class CaptionPlaybackState: @unchecked Sendable {
     nonisolated func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            guard enabled, hasLecture else { controller?.stopPictureInPicture(); return }
+            startInFlight = false; startRequested = false
+            guard enabled, hasLecture, !foreground || manualStart else { controller?.stopPictureInPicture(); return }
             isActive = true; status = "小窗已打开"; onDiagnostic?("caption_pip_start", [:])
         }
     }
     nonisolated func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            isActive = false; status = enabled ? "小窗已关闭；录音状态不变" : "已关闭"; onDiagnostic?("caption_pip_stop", [:])
+            isActive = false; startInFlight = false; startRequested = false
+            status = enabled ? "小窗已关闭；录音状态不变" : "已关闭"; onDiagnostic?("caption_pip_stop", [:])
         }
     }
     nonisolated func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, failedToStartPictureInPictureWithError error: Error) {
         let message = error.localizedDescription
         Task { @MainActor [weak self] in
             guard let self, enabled else { return }
-            isActive = false; status = "小窗暂不可用，请稍后重试"; onDiagnostic?("caption_pip_error", ["error": message])
+            isActive = false; startInFlight = false; startRequested = false
+            status = "小窗暂不可用，请稍后重试"; onDiagnostic?("caption_pip_error", ["error": message])
         }
     }
     nonisolated func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
@@ -173,15 +224,19 @@ private final class CaptionPlaybackState: @unchecked Sendable {
 }
 
 final class CaptionVideoSurface: UIView {
+    var onReady: (() -> Void)?
     override class var layerClass: AnyClass { AVSampleBufferDisplayLayer.self }
     var displayLayer: AVSampleBufferDisplayLayer { layer as! AVSampleBufferDisplayLayer }
     override init(frame: CGRect) { super.init(frame: frame); displayLayer.videoGravity = .resizeAspect }
+    override func didMoveToWindow() { super.didMoveToWindow(); if window != nil { onReady?() } }
+    override func layoutSubviews() { super.layoutSubviews(); if window != nil && bounds.width > 0 && bounds.height > 0 { onReady?() } }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 }
 struct CaptionPictureInPicturePreview: UIViewRepresentable {
     let coordinator: CaptionPictureInPicture
     func makeUIView(context: Context) -> CaptionVideoSurface {
         let view = CaptionVideoSurface(); view.isAccessibilityElement = false; view.accessibilityElementsHidden = true
+        view.onReady = { [weak coordinator, weak view] in if let view { coordinator?.attach(view) } }
         coordinator.attach(view); return view
     }
     func updateUIView(_ uiView: CaptionVideoSurface, context: Context) { coordinator.attach(uiView) }

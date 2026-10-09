@@ -198,7 +198,7 @@ struct LessonDetailView: View {
                     Text(totals.total == 0 ? "用量未返回" : "\(totals.total.formatted()) tokens\(totals.unknown > 0 ? " · 部分用量未返回" : "")").font(.caption).foregroundStyle(Color.williamSecondary)
                 }.buttonStyle(.plain)
                 if showUsage {
-                    if totals.total > 0 { Text("已返回统计：输入 \(totals.input) · 输出 \(totals.output)\n实时 \(totals.live) · 课后 \(totals.postLesson) · 查词 \(totals.lookup)").font(.caption).foregroundStyle(Color.williamSecondary) }
+                    if totals.total > 0 { Text("已返回统计：输入 \(totals.input) · 输出 \(totals.output)\n实时 \(totals.live) · 课后 \(totals.postLesson) · 查词 \(totals.lookup) · 手动摘要 \(totals.manualSummary)").font(.caption).foregroundStyle(Color.williamSecondary) }
                     if totals.unknown > 0 { Text("\(totals.unknown) 次请求的用量未返回").font(.caption).foregroundStyle(Color.williamSecondary) }
                 }
             }
@@ -291,10 +291,10 @@ struct LessonDetailView: View {
     private func detailCaption(_ segment: TranscriptSegment) -> some View {
         let correction = original ? nil : document?.correction(for: segment)
         let marked = notes.first { $0.segmentID == segment.id }?.marked == true
-        let chinese = correction?.chinese ?? segment.exportChinese
+        let chinese = correction.flatMap { $0.chinese.isEmpty ? nil : $0.chinese } ?? segment.exportChinese
         let terminal = document.map { !$0.state.automatic } ?? true
         return VStack(alignment: .leading, spacing: 8) {
-            CaptionTextView(caption: WorkspaceCaption(segment, chinese: chinese, english: correction?.english,
+            CaptionTextView(caption: WorkspaceCaption(segment, chinese: chinese, english: original ? segment.english : (correction?.english ?? segment.displayEnglish),
                 phase: chinese == nil && terminal ? .failed : nil), marked: marked,
                 lookup: controller.lookup, lookupOwner: lookupOwner, lookupSession: session.id, lookupCourse: session.course,
                 onMark: { Task {

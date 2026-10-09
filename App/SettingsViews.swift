@@ -50,6 +50,11 @@ struct LectureSettingsView: View {
                 Text("录课时显示最新英中字幕，切换 App 后使用系统画中画。锁屏时小窗不可见，录音与翻译继续处理。")
                     .font(.footnote).foregroundStyle(Color.williamSecondary)
             }
+            Section {
+                NavigationLink("字幕显示") {
+                    Form { CaptionAppearanceSettings() }.navigationTitle("字幕显示").navigationBarTitleDisplayMode(.inline)
+                }.accessibilityIdentifier("caption-display-settings")
+            }
             Section("OpenAI 最终翻译") {
                 Text(keySaved || Keychain.load() != nil ? "API Key 已保存在本机" : "尚未配置 API Key")
                 SecureField("输入新 Key，留空保留原 Key", text: $key, prompt: Text("输入新 Key，留空保留原 Key").foregroundStyle(Color.williamSecondary))

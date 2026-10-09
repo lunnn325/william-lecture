@@ -11,7 +11,7 @@ struct WorkspaceCaption: Identifiable, Equatable {
     let revision: Int
     var provisional = false
     init(_ segment: TranscriptSegment, chinese: String? = nil, english: String? = nil, phase: CaptionPhase? = nil) {
-        id = segment.id; start = segment.start; self.english = english ?? segment.english; self.chinese = chinese ?? segment.displayChinese
+        id = segment.id; start = segment.start; self.english = english ?? segment.displayEnglish; self.chinese = chinese ?? segment.displayChinese
         self.phase = phase ?? segment.phase; revision = segment.sourceRevision
     }
     init(id: UUID, start: Double, english: String, chinese: String?, provisional: Bool) {
@@ -35,9 +35,9 @@ struct LectureRootView: View {
         }
         .tint(.williamAccent)
         .onChange(of: phase) { _, phase in
+            controller.pictureInPicture.sceneChanged(phase)
             if phase != .inactive {
                 controller.setForeground(phase == .active)
-                if phase == .active { controller.pictureInPicture.stop() }
             }
         }
         .onChange(of: pipCaption, initial: true) { _, _ in controller.syncPictureInPicture() }
@@ -75,13 +75,16 @@ struct CaptionTextView: View {
     var onPlay: () -> Void = {}
     var playEnabled = false
     var beforePronunciation: (() -> Void)?
-    @ScaledMetric(relativeTo: .body) private var chineseSize = 22.0
-    @ScaledMetric(relativeTo: .body) private var englishSize = 17.0
+    @AppStorage("captionChineseSize") private var chineseSize = CaptionSize.standard
+    @AppStorage("captionEnglishSize") private var englishSize = CaptionSize.standard
+    @AppStorage("captionChineseTone") private var chineseTone = CaptionTone.dark
+    @AppStorage("captionEnglishTone") private var englishTone = CaptionTone.standard
+    @ScaledMetric(relativeTo: .body) private var typeScale = 1.0
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
                 LookupEnglishText(lookup: lookup, owner: lookupOwner, session: lookupSession,
-                    course: lookupCourse, caption: caption, fontSize: CGFloat(englishSize), onFocus: onLookupStart,
+                    course: lookupCourse, caption: caption, fontSize: CGFloat(englishSize.englishPoints * typeScale), color: .primary.opacity(englishTone.opacity), onFocus: onLookupStart,
                     beforePronunciation: beforePronunciation)
                 if marked { Image(systemName: "bookmark.fill").font(.caption).foregroundStyle(.tint).accessibilityLabel("已标记").accessibilityIdentifier("caption-mark-\(caption.id.uuidString)") }
             }
@@ -111,8 +114,8 @@ struct CaptionTextView: View {
     private var sentence: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(caption.chinese ?? "…")
-                .font(caption.chinese == nil ? .footnote : .system(size: chineseSize, weight: .regular)).lineSpacing(6)
-                .foregroundStyle(caption.chinese == nil ? Color.williamSecondary : Color.primary)
+                .font(caption.chinese == nil ? .footnote : .system(size: chineseSize.chinesePoints * typeScale, weight: .regular)).lineSpacing(6)
+                .foregroundStyle(caption.chinese == nil ? Color.williamSecondary : Color.primary.opacity(chineseTone.opacity))
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("caption-chinese-\(caption.id.uuidString)")
             Text(SessionStore.readingTime(caption.start)).font(.caption2).monospacedDigit().foregroundStyle(Color.williamSecondary)
@@ -140,6 +143,7 @@ struct WorkspaceView: View {
     @State private var confirmStop = false
     @State private var noteContext: NoteContext?
     @State private var savedDetail = false
+    @State private var liveSummary = false
     @State private var loadingEarlier = false
     @State private var hasEarlier = false
     @State private var paneSessionID: UUID?
@@ -257,6 +261,13 @@ struct WorkspaceView: View {
             .navigationTitle(controller.active ? controller.course : "William Lecture")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if controller.active {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button { controller.generateLiveSummary(); liveSummary = true } label: { Image(systemName: "text.badge.checkmark") }
+                            .frame(minWidth: 44, minHeight: 44).accessibilityLabel("总结当前内容").accessibilityIdentifier("summarize-current")
+                            .disabled(controller.visible.isEmpty && controller.workspaceDraft == nil)
+                    }
+                }
                 ToolbarItem(placement: .principal) {
                     Button { courses = true } label: {
                         VStack(spacing: 3) {
@@ -273,6 +284,16 @@ struct WorkspaceView: View {
                         }.foregroundStyle(Color(uiColor: .label)).frame(minHeight: 44)
                     }.disabled(controller.active || controller.busy).accessibilityLabel("选择课程，\(controller.course)").accessibilityIdentifier("course-picker")
                 }
+                if controller.pictureInPictureEnabled && controller.active && controller.pictureInPicture.supported {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { controller.pictureInPicture.start() } label: {
+                            CaptionPictureInPicturePreview(coordinator: controller.pictureInPicture)
+                                .frame(width: 56, height: 32).clipShape(RoundedRectangle(cornerRadius: 6))
+                                .overlay { Image(systemName: "pip.enter").font(.system(size: 17)).foregroundStyle(.white).shadow(radius: 2) }
+                                .frame(minWidth: 56, minHeight: 44)
+                        }.buttonStyle(.plain).accessibilityLabel("打开字幕小窗").accessibilityIdentifier("open-caption-pip")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { settings = true } label: { Image(systemName: "gearshape") }
                         .accessibilityLabel("录课设置").frame(minWidth: 44, minHeight: 44)
@@ -280,6 +301,10 @@ struct WorkspaceView: View {
             }
             .toolbar(controller.active ? .hidden : .visible, for: .tabBar)
             .sheet(isPresented: $settings) { NavigationStack { LectureSettingsView(inSheet: true) } }
+            .sheet(isPresented: $liveSummary, onDismiss: { controller.liveSummary.cancel() }) {
+                LiveSummaryView(summary: controller.liveSummary, regenerate: { controller.generateLiveSummary() })
+            }
+            .onChange(of: controller.session?.id) { _, _ in liveSummary = false; controller.liveSummary.cancel(clear: true) }
             .sheet(isPresented: $status) { NavigationStack { DiagnosticsView() } }
             .sheet(isPresented: $courses) { CoursePickerView() }
             .sheet(item: $noteContext) { NoteEditorView(context: $0).id($0.id) }
@@ -318,15 +343,6 @@ struct WorkspaceView: View {
     }
     private var controls: some View {
         VStack(spacing: 16) {
-            if controller.pictureInPictureEnabled && controller.active && controller.pictureInPicture.supported {
-                CaptionPictureInPicturePreview(coordinator: controller.pictureInPicture)
-                    .frame(width: 224, height: 126).clipShape(RoundedRectangle(cornerRadius: 10))
-                    .overlay(alignment: .topTrailing) {
-                        Button { controller.pictureInPicture.start() } label: {
-                            Image(systemName: "pip.enter").foregroundStyle(.white).frame(width: 44, height: 44)
-                        }.buttonStyle(.plain).accessibilityLabel("打开字幕小窗").accessibilityIdentifier("open-caption-pip")
-                    }
-            }
             if controller.active || controller.starting || controller.stopping {
             HStack(spacing: 18) {
                 Rectangle().fill(Color.williamSecondary.opacity(0.15)).frame(height: 0.5)

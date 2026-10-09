@@ -9,6 +9,7 @@ struct LookupEnglishText: UIViewRepresentable {
     let course: String
     let caption: WorkspaceCaption
     let fontSize: CGFloat
+    let color: Color
     var onFocus: () -> Void
     var beforePronunciation: (() -> Void)?
 
@@ -33,7 +34,7 @@ struct LookupEnglishText: UIViewRepresentable {
         let source = focused ? lookup.frozenEnglish : caption.english
         let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 4
         let text = NSAttributedString(string: source, attributes: [
-            .font: UIFont.systemFont(ofSize: fontSize), .foregroundColor: UIColor(Color.williamSecondary).resolvedColor(with: view.traitCollection), .paragraphStyle: paragraph
+            .font: UIFont.systemFont(ofSize: fontSize), .foregroundColor: UIColor(color).resolvedColor(with: view.traitCollection), .paragraphStyle: paragraph
         ])
         // SwiftUI-backed dynamic UIColor providers can compare unequal on a
         // caption update. Reassigning attributedText revokes UIKit's selection.

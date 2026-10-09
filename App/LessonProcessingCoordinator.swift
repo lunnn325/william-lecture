@@ -45,10 +45,10 @@ import WLCore
         wake()
     }
     /// Resume only an already-requested legacy job, never submit untouched history.
-    func recoverLegacySpeechFailures() async {
+    func recoverKnownProcessingFailures() async {
         for session in (try? await store.sessions()) ?? [] where [.stopped, .recovered].contains(session.state) {
             guard let content = try? await store.content(session.id), content.state == .failed,
-                  content.error?.contains("Speech") == true else { continue }
+                  content.error?.contains("Speech") == true || content.error?.contains("修订改变了数字或否定") == true else { continue }
             await enqueue(session, retry: true)
         }
         wake()
@@ -160,7 +160,9 @@ import WLCore
                     try await save(&document)
                 }
                 for source in chunk {
-                    if let corrected = document.correction(for: source) { try await store.repairTranslation(source, chinese: corrected.chinese, session: session.id) }
+                    if let corrected = document.correction(for: source), !corrected.chinese.isEmpty {
+                        try await store.repairTranslation(source, chinese: corrected.chinese, session: session.id)
+                    }
                 }
                 position = end
             }

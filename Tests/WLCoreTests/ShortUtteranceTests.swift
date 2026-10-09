@@ -32,7 +32,7 @@ final class ShortUtteranceTests: XCTestCase {
         let (root, store, session) = try await fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         for word in ["can", " UH. ", "Okay?", "yeah"] { XCTAssertTrue(ShortUtterance.localOnly(word)) }
-        for text in ["Can you explain?", "I can't agree.", "really?", "Okay, the cost is 5.", "No."] {
+        for text in ["Can you explain?", "I can't agree.", "Why is it right?", "Okay, the cost is 5.", "No demand means no sales."] {
             XCTAssertFalse(ShortUtterance.localOnly(text))
         }
         XCTAssertNil(ShortUtterance.draft("can"))

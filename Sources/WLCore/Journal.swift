@@ -138,6 +138,12 @@ public actor SessionStore {
         return String(translationIndex.values.filter { $0.id != source.id && $0.end <= source.start + 0.001 && $0.end >= source.start - 30 }
             .sorted { $0.start < $1.start }.map(\.english).joined(separator: " ").suffix(6000))
     }
+    public func revisionContext(_ source: TranscriptSegment, session: UUID) throws -> String {
+        try loadTranslationIndex(session)
+        return String(translationIndex.values.filter {
+            $0.id != source.id && $0.end >= source.start - 30 && $0.start <= source.end + 30
+        }.sorted { $0.start < $1.start }.map { "[\(Self.readingTime($0.start))] \($0.english)" }.joined(separator: "\n").suffix(12000))
+    }
     public func beginGPT(_ source: TranscriptSegment, session: UUID, request: UUID, at: Date) throws -> TranscriptSegment? {
         guard !Task.isCancelled, var current = try translationSnapshot(source, session: session),
               current.status == .pending || current.status == .failed else { return nil }
@@ -147,11 +153,15 @@ public actor SessionStore {
         return try commitTranslation(current, session: session)
     }
     public func applyGPT(_ source: TranscriptSegment, session: UUID, request: UUID, status: TranslationStatus,
-                         chinese: String? = nil, firstAt: Date? = nil, completedAt: Date? = nil, error: String? = nil) throws -> TranscriptSegment? {
+                         chinese: String? = nil, firstAt: Date? = nil, completedAt: Date? = nil, error: String? = nil,
+                         revisedEnglish: String? = nil) throws -> TranscriptSegment? {
         guard !Task.isCancelled, var current = try translationSnapshot(source, session: session), current.gptRequestID == request,
               current.status == .pending else { return nil }
         current.status = status; current.chinese = chinese; current.firstTranslationAt = firstAt
         current.completedAt = completedAt; current.error = error
+        if status == .completed {
+            current.gptEnglish = revisedEnglish; current.gptEnglishRevision = revisedEnglish == nil ? nil : current.sourceRevision
+        }
         if status != .pending || error != nil { current.gptRequestID = nil }
         return try commitTranslation(current, session: session)
     }
@@ -361,7 +371,7 @@ public actor SessionStore {
         for record in records {
             let corrected = document?.correction(for: record)
             lines.append("[\(Self.timestamp(record.start)) – \(Self.timestamp(record.end))]")
-            if language != .chinese { lines.append(corrected?.english ?? record.english) }
+            if language != .chinese { lines.append(corrected?.english ?? (original ? record.english : record.displayEnglish)) }
             if language != .english {
                 if let corrected, !corrected.chinese.isEmpty { lines.append(corrected.chinese) }
                 else if record.finalChinese != nil { lines.append(record.finalChinese!) }

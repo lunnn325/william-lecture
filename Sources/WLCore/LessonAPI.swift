@@ -77,14 +77,25 @@ public final class LessonAPI: @unchecked Sendable {
                                      name: "lecture_revision", maxOutput: 8192, key: key, store: store, session: session)
         let result = try JSONDecoder().decode(Result.self, from: data)
         guard result.segments.map(\.id) == sources.map(\.id) else { throw LessonAPIError.invalid("修订结果与原文段落不匹配") }
-        return try zip(sources, result.segments).map { source, row in
-            guard !row.english.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  !row.chinese.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  Self.protectedTokens(source.english) == Self.protectedTokens(row.english) else {
-                throw LessonAPIError.invalid("修订改变了数字或否定，已保留原文")
+        var corrections: [CorrectedSegment] = []
+        for (source, row) in zip(sources, result.segments) {
+            let checked = Self.checkedRevision(source, english: row.english, chinese: row.chinese)
+            corrections.append(checked.correction)
+            if checked.retainedOriginal {
+                try? await store.log(Diagnostic("post_revision_retained_original", offset: source.start,
+                    fields: ["segment": source.id.uuidString, "reason": "protected_tokens_or_empty_result"]), session: session)
             }
-            return CorrectedSegment(source: source, english: row.english, chinese: row.chinese)
         }
+        return corrections
+    }
+    /// Reject only the unsafe pair; one changed number must not cancel the whole summary.
+    public static func checkedRevision(_ source: TranscriptSegment, english: String, chinese: String)
+        -> (correction: CorrectedSegment, retainedOriginal: Bool) {
+        let valid = !english.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !chinese.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            protectedTokens(source.english) == protectedTokens(english)
+        return (CorrectedSegment(source: source, english: valid ? english : source.english,
+            chinese: valid ? chinese : source.exportChinese ?? ""), !valid)
     }
     public static func protectedTokens(_ text: String) -> [String] {
         let pattern = #"\d+(?:[.,]\d+)*|\b(?:not|no|never|without|cannot|can't|don't|doesn't|didn't|isn't|aren't|wasn't|weren't|won't|wouldn't|shouldn't|couldn't)\b"#
@@ -108,8 +119,8 @@ public final class LessonAPI: @unchecked Sendable {
         var lines: [String] = []
         for source in sources {
             let corrected = content.correction(for: source)
-            let english: String = corrected?.english ?? source.english
-            let chinese: String = corrected?.chinese ?? source.exportChinese ?? "[中文缺失]"
+            let english: String = corrected?.english ?? source.displayEnglish
+            let chinese: String = corrected.flatMap { $0.chinese.isEmpty ? nil : $0.chinese } ?? source.exportChinese ?? "[中文缺失]"
             let timestamp = SessionStore.timestamp(source.start)
             lines.append("\(source.id.uuidString) [\(timestamp)] \(english)\n\(chinese)")
         }

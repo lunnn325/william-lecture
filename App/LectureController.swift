@@ -13,6 +13,12 @@ import WLAppleAudio
     @Published var visible: [TranscriptSegment] = []
     @Published var latestCaptionUpdate: TranscriptSegment?
     @Published private(set) var foregroundRefresh = UUID()
+    let liveSummary = LiveSummary()
+    func generateLiveSummary() {
+        guard active, let session else { return }
+        liveSummary.generate(session: session, draft: workspaceDraft, elapsed: elapsed,
+            config: TranslatorConfiguration(mock: mode == .mock, model: model, key: Keychain.load()), store: store)
+    }
     @Published var pictureInPictureEnabled = UserDefaults.standard.bool(forKey: "captionPictureInPicture") {
         didSet { UserDefaults.standard.set(pictureInPictureEnabled, forKey: "captionPictureInPicture"); syncPictureInPicture() }
     }
@@ -125,9 +131,9 @@ import WLAppleAudio
                 #endif
                 await refreshHistory()
                 #if DEBUG
-                if !isUIFixture { prewarm(); await processing.recoverLegacySpeechFailures() }
+                if !isUIFixture { prewarm(); await processing.recoverKnownProcessingFailures() }
                 #else
-                prewarm(); await processing.recoverLegacySpeechFailures()
+                prewarm(); await processing.recoverKnownProcessingFailures()
                 #endif
             } catch { warning = error.localizedDescription }
         }
@@ -162,6 +168,7 @@ import WLAppleAudio
     func start() async {
         guard !busy, !active else { return }; busy = true; starting = true; defer { busy = false; starting = false }
         lookup.prepareForRecording()
+        liveSummary.cancel(clear: true)
         #if DEBUG
         if isUIFixture { await startUIFixture(); return }
         #endif
@@ -370,7 +377,7 @@ import WLAppleAudio
         segment.localEnabled = localEnabled; segment.gptDeferred = worker == nil
         // Known standalone fillers remain available even if the Apple model is
         // temporarily unavailable. They never enter the GPT queue.
-        if localEnabled, segment.validLocalChinese == nil, let chinese = ShortUtterance.draft(segment.english) {
+        if localEnabled, segment.validLocalChinese == nil, let chinese = ShortUtterance.draft(segment.english, context: shortWordContext(before: segment.start)) {
             segment.localChinese = chinese; segment.localSourceText = segment.english; segment.localRevision = segment.sourceRevision
             segment.localFirstAt = segment.localFirstAt ?? Date(); segment.localCompletedAt = Date()
         }
@@ -450,7 +457,7 @@ import WLAppleAudio
            !visible.contains(where: { $0.id == buffer.pendingID }), let partial = realtimePartial {
             let draft = drafts.current
             let translated = draft?.id == buffer.pendingID && draft?.english == english ? draft?.chinese : nil
-            let chinese = translated ?? (localEnabled && mode != .mock ? ShortUtterance.draft(english) : nil)
+            let chinese = translated ?? (localEnabled && mode != .mock ? ShortUtterance.draft(english, context: shortWordContext(before: partial.start)) : nil)
             return WorkspaceCaption(id: buffer.pendingID, start: buffer.pendingStart ?? partial.start,
                                     english: english, chinese: chinese, provisional: true)
         }
@@ -462,11 +469,15 @@ import WLAppleAudio
         return WorkspaceCaption(id: buffer.pendingID, start: buffer.pendingStart ?? elapsed, english: english, chinese: nil, provisional: true)
     }
     var courseChoices: [String] { Array(Set(CourseProfiles.courses + savedCourses + history.map(\.course) + [course])).sorted() }
+    private func shortWordContext(before offset: Double) -> String {
+        visible.filter { $0.end <= offset + 0.001 && $0.end >= offset - 30 }.map(\.english).joined(separator: " ")
+    }
     func selectCourse(_ name: String) {
         guard !active, !busy else { return }
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         if course != String(name.prefix(80)) {
+            liveSummary.cancel(clear: true)
             lookup.close()
             session = nil; visible = []; currentChinese = ""; volatileEnglish = ""; sessionNotes = []; latestCaptionUpdate = nil
         }
