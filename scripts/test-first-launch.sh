@@ -19,6 +19,9 @@ cleanup() { for device in "${devices[@]}"; do xcrun simctl shutdown "$device" >/
 trap cleanup EXIT
 run_flow() {
   local label="$1" type="$2" device result status=0
+  # This CI job runs devices sequentially. Xcode can leave test-runner clones
+  # booted after the phone flow; release those before booting the larger iPad.
+  xcrun simctl shutdown all >/dev/null 2>&1 || true
   device=$(xcrun simctl create "WL-$label-${GITHUB_RUN_ID:-local}" "$type" "$runtime") || return $?
   devices+=("$device")
   xcrun simctl boot "$device" || return $?
@@ -29,6 +32,7 @@ run_flow() {
   xcodebuild -project WilliamLecture.xcodeproj -scheme WilliamLecture \
     -configuration Debug -destination "platform=iOS Simulator,id=$device" \
     -derivedDataPath build/simulator -resultBundlePath "$result" \
+    -parallel-testing-enabled NO \
     "$filter" CODE_SIGNING_ALLOWED=NO test | tee "build/$label.log" || status=$?
   mkdir -p "build/screenshots/$label"
   xcrun xcresulttool export attachments --path "$result" --output-path "build/screenshots/$label" || true
