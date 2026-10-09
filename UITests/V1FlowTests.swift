@@ -3,6 +3,19 @@ import UIKit
 
 @MainActor final class V1FlowTests: XCTestCase {
     override func setUp() { super.setUp(); continueAfterFailure = false; XCUIDevice.shared.orientation = .portrait }
+    func testCaptionVideoFrameContainsOpaqueTextAndRecordingContinues() {
+        let app = launch(active: true, extra: ["--wl-pip-probe", "--wl-live-arrival"])
+        let warning = app.buttons["system-warning"]
+        XCTAssertTrue(warning.waitForExistence(timeout: 5))
+        // Pixel generation only: Simulator cannot prove real-device PiP composition.
+        let pixels = warning.value as? String ?? ""
+        XCTAssertTrue(pixels.contains("iosurface=true"), pixels)
+        XCTAssertTrue(pixels.contains("opaque=true"), pixels)
+        XCTAssertTrue(pixels.contains("text_pixels=")); XCTAssertFalse(pixels.contains("text_pixels=0"), pixels)
+        app.buttons["fixture-append-caption"].tap()
+        XCTAssertTrue(app.textViews["caption-english-20000000-0000-0000-0000-000000000019"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["录音中"].exists)
+    }
     func testManualSummaryDoesNotStopClassroomControls() {
         let app = launch(active: true, extra: ["--wl-live-arrival"])
         app.buttons["summarize-current"].tap()

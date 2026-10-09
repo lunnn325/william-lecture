@@ -79,6 +79,11 @@ public struct TranscriptSegment: Codable, Identifiable, Sendable, Equatable {
     public var gptDeferred: Bool?
     public var gptEnglish: String?
     public var gptEnglishRevision: Int?
+    /// Independent bounded context recheck; never resets the visible first-pass pair.
+    public var liveRecheckRequestID: UUID?
+    public var liveRecheckedRevision: Int?
+    public var liveContextVersion: Int?
+    public var gptPairVersion: Int?
     public var finalEnglish: String? {
         guard finalChinese != nil, gptEnglishRevision == sourceRevision else { return nil }
         return gptEnglish
@@ -128,6 +133,7 @@ public struct TranscriptSegment: Codable, Identifiable, Sendable, Equatable {
             merged.chinese = prior.chinese; merged.status = prior.status; merged.error = prior.error
             merged.gptRevision = prior.gptRevision; merged.gptRequestID = prior.gptRequestID
             merged.gptEnglish = prior.gptEnglish; merged.gptEnglishRevision = prior.gptEnglishRevision
+            merged.gptPairVersion = prior.gptPairVersion
             merged.submittedAt = prior.submittedAt; merged.firstTranslationAt = prior.firstTranslationAt
             merged.completedAt = prior.completedAt; merged.attempts = prior.attempts
         } else if status == .pending, error == nil, chinese == nil, gptRequestID == prior.gptRequestID {

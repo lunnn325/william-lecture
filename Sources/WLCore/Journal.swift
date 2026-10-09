@@ -139,10 +139,94 @@ public actor SessionStore {
             .sorted { $0.start < $1.start }.map(\.english).joined(separator: " ").suffix(6000))
     }
     public func revisionContext(_ source: TranscriptSegment, session: UUID) throws -> String {
+        try liveContext(source, session: session).text
+    }
+    public func liveContext(_ source: TranscriptSegment, session: UUID) throws -> LiveContextSnapshot {
         try loadTranslationIndex(session)
-        return String(translationIndex.values.filter {
-            $0.id != source.id && $0.end >= source.start - 30 && $0.start <= source.end + 30
-        }.sorted { $0.start < $1.start }.map { "[\(Self.readingTime($0.start))] \($0.english)" }.joined(separator: "\n").suffix(12000))
+        let recent = translationIndex.values.filter {
+            $0.id != source.id && $0.end >= source.start - 90 && $0.start <= source.end + 30
+        }.sorted { $0.start < $1.start }
+        let memory = try liveMemory(session)
+        var lines = ["RECENT ORIGINAL SPEECH (authoritative; accepted corrections are suggestions):"]
+        lines += recent.map { row in
+            var line = "[\(Self.readingTime(row.start))] original: \(row.english)"
+            if let corrected = row.finalEnglish, corrected != row.english { line += "\naccepted correction: \(corrected)" }
+            return line
+        }
+        let recentText = String(lines.joined(separator: "\n").suffix(12000))
+        let memoryText = memory.items.map { "\($0.value.kind): \($0.value.english) / \($0.value.chinese) [source \($0.segmentID), quote: \($0.value.quote)]" }.joined(separator: "\n")
+        let references = recent.map { LiveContextSource(id: $0.id, revision: $0.sourceRevision, english: $0.english) } +
+            memory.items.map { LiveContextSource(id: $0.segmentID, revision: $0.revision, english: $0.source) }
+        return .init(sessionID: session, version: memory.version,
+            text: recentText + "\nEARLIER LESSON MEMORY (context only; never override original speech):\n" + memoryText, sources: references)
+    }
+    public func liveMemory(_ session: UUID) throws -> LiveMemory {
+        try loadTranslationIndex(session)
+        let path = folder(session).appendingPathComponent("live-context.json")
+        guard FileManager.default.fileExists(atPath: path.path) else { return LiveMemory(sessionID: session) }
+        do {
+            var memory = try JSONDecoder().decode(LiveMemory.self, from: Data(contentsOf: path))
+            guard memory.sessionID == session else { throw WLFailure.message("课堂上下文身份不匹配") }
+            memory.retainValid(in: translationIndex); return memory
+        } catch {
+            // Optional memory damage must not block a single live translation.
+            try? log(Diagnostic("live_memory_read_error", fields: ["error": error.localizedDescription]), session: session)
+            return LiveMemory(sessionID: session)
+        }
+    }
+    public func updateLiveMemory(_ updates: [LiveMemoryUpdate], source: TranscriptSegment, session: UUID) throws {
+        guard let current = try translationSnapshot(source, session: session), current.finalChinese != nil,
+              current.gptPairVersion == source.gptPairVersion, current.finalEnglish == source.finalEnglish,
+              current.finalChinese == source.finalChinese else { return }
+        var memory = try liveMemory(session)
+        memory.merge(updates, source: current)
+        let path = folder(session).appendingPathComponent("live-context.json")
+        try JSONEncoder().encode(memory).write(to: path, options: .atomic)
+        #if os(iOS)
+        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: path.path)
+        #endif
+    }
+    public func liveContextIsCurrent(_ snapshot: LiveContextSnapshot, session: UUID) throws -> Bool {
+        guard snapshot.sessionID == session, !isDeleted(session) else { return false }
+        try loadTranslationIndex(session)
+        return snapshot.sources.allSatisfy { reference in
+            guard let current = translationIndex[reference.id] else { return false }
+            return current.sourceRevision == reference.revision && current.english == reference.english
+        }
+    }
+    public func liveRecheckCandidates(_ session: UUID, now: Date, delay: Double = 8) throws -> [TranscriptSegment] {
+        try loadTranslationIndex(session)
+        guard let newest = translationIndex.values.max(by: { $0.end < $1.end }) else { return [] }
+        return translationIndex.values.filter {
+            $0.id != newest.id && $0.end < newest.end && $0.start >= newest.end - 30 &&
+            !$0.prefersLocalOnly && $0.finalChinese != nil && $0.liveRecheckedRevision != $0.sourceRevision &&
+            $0.liveRecheckRequestID == nil && ($0.completedAt ?? now).addingTimeInterval(delay) <= now
+        }.sorted { $0.start > $1.start }.prefix(3).map { $0 }
+    }
+    public func beginLiveRecheck(_ source: TranscriptSegment, session: UUID, request: UUID) throws -> TranscriptSegment? {
+        guard !Task.isCancelled, var current = try translationSnapshot(source, session: session), current.finalChinese != nil,
+              current.translationUpdate == source.translationUpdate, current.liveRecheckedRevision != current.sourceRevision,
+              current.liveRecheckRequestID == nil else { return nil }
+        current.liveRecheckRequestID = request; current.liveRecheckedRevision = current.sourceRevision
+        return try commitTranslation(current, session: session)
+    }
+    public func finishLiveRecheck(_ source: TranscriptSegment, session: UUID, request: UUID,
+                                  result: LiveRevision?, contextVersion: Int) throws -> TranscriptSegment? {
+        guard !Task.isCancelled, var current = try translationSnapshot(source, session: session),
+              current.liveRecheckRequestID == request, current.finalChinese != nil,
+              current.gptPairVersion == source.gptPairVersion else { return nil }
+        current.liveRecheckRequestID = nil
+        if let result {
+            current.chinese = result.chinese; current.gptEnglish = result.english
+            current.gptEnglishRevision = current.sourceRevision; current.completedAt = Date()
+            current.liveContextVersion = contextVersion
+            current.gptPairVersion = (current.gptPairVersion ?? 0) + 1
+        }
+        return try commitTranslation(current, session: session)
+    }
+    public func cancelLiveRecheck(_ source: TranscriptSegment, session: UUID, request: UUID) throws {
+        guard var current = try translationSnapshot(source, session: session), current.liveRecheckRequestID == request else { return }
+        current.liveRecheckRequestID = nil; _ = try commitTranslation(current, session: session)
     }
     public func beginGPT(_ source: TranscriptSegment, session: UUID, request: UUID, at: Date) throws -> TranscriptSegment? {
         guard !Task.isCancelled, var current = try translationSnapshot(source, session: session),
@@ -154,13 +238,15 @@ public actor SessionStore {
     }
     public func applyGPT(_ source: TranscriptSegment, session: UUID, request: UUID, status: TranslationStatus,
                          chinese: String? = nil, firstAt: Date? = nil, completedAt: Date? = nil, error: String? = nil,
-                         revisedEnglish: String? = nil) throws -> TranscriptSegment? {
+                         revisedEnglish: String? = nil, contextVersion: Int? = nil) throws -> TranscriptSegment? {
         guard !Task.isCancelled, var current = try translationSnapshot(source, session: session), current.gptRequestID == request,
               current.status == .pending else { return nil }
         current.status = status; current.chinese = chinese; current.firstTranslationAt = firstAt
         current.completedAt = completedAt; current.error = error
         if status == .completed {
             current.gptEnglish = revisedEnglish; current.gptEnglishRevision = revisedEnglish == nil ? nil : current.sourceRevision
+            current.liveContextVersion = contextVersion
+            current.gptPairVersion = (current.gptPairVersion ?? 0) + 1
         }
         if status != .pending || error != nil { current.gptRequestID = nil }
         return try commitTranslation(current, session: session)
@@ -291,6 +377,7 @@ public actor SessionStore {
             do {
                 for var segment in try segments(saved.id) {
                     var changed = false
+                    if segment.liveRecheckRequestID != nil { segment.liveRecheckRequestID = nil; changed = true }
                     if segment.localRequestID != nil {
                         segment.localRequestID = nil
                         if segment.validLocalChinese == nil && segment.localError == nil { segment.localAttemptedRevision = nil }

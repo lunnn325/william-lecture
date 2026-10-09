@@ -21,8 +21,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.williamlecture.validation
         PRODUCT_NAME: WilliamLecture
-        MARKETING_VERSION: 1.1.6
-        CURRENT_PROJECT_VERSION: 16
+        MARKETING_VERSION: 1.1.7
+        CURRENT_PROJECT_VERSION: 17
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"

@@ -38,6 +38,7 @@ extension LectureController {
         lesson.stoppedAt = lesson.state == .stopped ? lesson.startedAt.addingTimeInterval(24) : nil
         try await populateFixture(&lesson)
         if lesson.state == .recording { session = lesson; visible = try await store.segments(lesson.id); sessionNotes = try await store.notes(lesson.id); audioStatus = "演示录音" }
+        if ProcessInfo.processInfo.arguments.contains("--wl-pip-probe") { warning = pictureInPicture.probeFrameForTesting() }
     }
     func startUIFixture() async {
         do {

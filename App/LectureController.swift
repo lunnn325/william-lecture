@@ -24,10 +24,6 @@ import WLAppleAudio
     }
     lazy var pictureInPicture: CaptionPictureInPicture = {
         let value = CaptionPictureInPicture()
-        value.onSetPlaying = { [weak self] playing in
-            guard let self, active, !busy, recording != playing else { return }
-            Task { await self.pauseOrResume(); self.syncPictureInPicture() }
-        }
         value.onDiagnostic = { [weak self] event, fields in self?.log(event, fields: fields) }
         return value
     }()
@@ -88,6 +84,7 @@ import WLAppleAudio
     private var primaryCaptionVisible = false
     private var renderedRows: Set<UUID> = []
     private var displayedFinalIDs: Set<UUID> = []
+    private var displayedRecheckVersions: [UUID: Int] = [:]
     private var foreground = true
     private var foregroundRecovery: Task<Void, Never>?
     private var buffer = SentenceBuffer()
@@ -192,7 +189,7 @@ import WLAppleAudio
             latestCaptionUpdate = nil; sessionNotes = []
             finalCursor = FinalSpeechCursor(); lastSpeechResultAt = nil
             drafts = CaptionDraftCoordinator(); previewChinese = [:]; focusedCaptionID = nil
-            renderedRows = []; displayedFinalIDs = []
+            renderedRows = []; displayedFinalIDs = []; displayedRecheckVersions = [:]
             let recorder = AudioRecorder(); self.recorder = recorder
             recorder.onEvent = { [weak self] event in Task { @MainActor in
                 guard self?.session?.id == next.id else { return }
@@ -445,6 +442,7 @@ import WLAppleAudio
         let retained = Set(visible.map(\.id)).union([buffer.pendingID])
         previewChinese = previewChinese.filter { retained.contains($0.key) }
         renderedRows.formIntersection(retained); displayedFinalIDs.formIntersection(retained)
+        displayedRecheckVersions = displayedRecheckVersions.filter { retained.contains($0.key) }
         syncPictureInPicture()
     }
     func captionChinese(_ segment: TranscriptSegment) -> String? {
@@ -557,6 +555,12 @@ import WLAppleAudio
                 fields["local_to_gpt_ms"] = "\(Int(max(0, at.timeIntervalSince(displayed)) * 1000))"
                 log("caption_gpt_replaced", offset: segment.end, fields: fields)
             } else { fields["local_shown"] = "false"; log("caption_gpt_displayed", offset: segment.end, fields: fields) }
+        }
+        if segment.finalChinese != nil, segment.liveRecheckedRevision == segment.sourceRevision,
+           segment.liveRecheckRequestID == nil, displayedRecheckVersions[id] != segment.translationUpdate {
+            displayedRecheckVersions[id] = segment.translationUpdate ?? 0
+            log("caption_recheck_displayed", offset: segment.start, fields: ["segment": id.uuidString,
+                "display_version": "\(segment.translationUpdate ?? 0)", "primary": "\(primary)"])
         }
     }
     var captionStatus: String {

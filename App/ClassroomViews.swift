@@ -331,6 +331,7 @@ struct WorkspaceView: View {
         if !controller.warning.isEmpty {
             Button("录音或保存异常") { status = true }
                 .font(.footnote).foregroundStyle(Color.williamWarning).frame(minHeight: 44).accessibilityIdentifier("system-warning")
+                .accessibilityValue(controller.warning)
         } else if controller.active && !controller.speechError.isEmpty {
             Button("转写暂不可用 · 重试") { Task { await controller.retrySpeech() } }
                 .font(.footnote).foregroundStyle(Color.williamWarning).frame(minHeight: 44)
