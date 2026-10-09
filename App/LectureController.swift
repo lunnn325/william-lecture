@@ -16,7 +16,7 @@ import WLAppleAudio
     let liveSummary = LiveSummary()
     func generateLiveSummary() {
         guard active, let session else { return }
-        liveSummary.generate(session: session, draft: workspaceDraft, elapsed: elapsed,
+        liveSummary.generate(session: session,
             config: TranslatorConfiguration(mock: mode == .mock, model: model, key: Keychain.load()), store: store)
     }
     @Published var pictureInPictureEnabled = UserDefaults.standard.bool(forKey: "captionPictureInPicture") {

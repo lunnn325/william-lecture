@@ -74,9 +74,6 @@ struct LessonDetailView: View {
     @State private var shareFiles: [URL] = []
     @State private var sharing = false
     @State private var showUsage = false
-    @State private var mapScale = 1.0
-    @State private var mapBaseScale = 1.0
-    @State private var mapSize = CGSize(width: 950, height: 520)
     @State private var viewportHeight: CGFloat = 800
     @State private var jumpID: UUID?
     @State private var jumpRequest = 0
@@ -265,28 +262,20 @@ struct LessonDetailView: View {
     @ViewBuilder private var summary: some View {
         if let d = document, !d.outline.isEmpty {
             if let overview = d.overview { Text(overview).font(.body).lineSpacing(6) }
-            ForEach(d.outline) { node in StudySummaryNode(node: node, depth: 0, times: Dictionary(uniqueKeysWithValues: segments.map { ($0.id, $0.start) }), jump: jump) }
+            StudyOutlineView(nodes: d.outline, sources: studySources, jump: jump)
             Button { Task { await shareStudy() } } label: { Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44) }.accessibilityLabel("分享摘要")
         } else { Text("暂无摘要").font(.subheadline).foregroundStyle(Color.williamSecondary) }
     }
     @ViewBuilder private var mindMap: some View {
         if let d = document, !d.outline.isEmpty {
-            HStack {
-                Button { mapScale = max(0.6, mapScale - 0.2) } label: { Image(systemName: "minus.magnifyingglass").frame(width: 44, height: 44) }.accessibilityLabel("缩小")
-                Button { mapScale = min(2.0, mapScale + 0.2) } label: { Image(systemName: "plus.magnifyingglass").frame(width: 44, height: 44) }.accessibilityLabel("放大")
-                Spacer()
-                Button { Task { await shareMap() } } label: { Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44) }.accessibilityLabel("分享思维导图")
-            }
-            ScrollView([.horizontal, .vertical]) {
-                LessonMindMap(title: d.title ?? session.course, nodes: d.outline, jump: jump)
-                    .frame(width: 950)
-                    .onGeometryChange(for: CGSize.self) { $0.size } action: { _, size in mapSize = size }
-                    .scaleEffect(mapScale, anchor: .topLeading)
-                    .frame(width: mapSize.width * mapScale, height: mapSize.height * mapScale, alignment: .topLeading)
-                    .padding(16)
-                    .simultaneousGesture(MagnifyGesture().onChanged { value in mapScale = min(2, max(0.6, mapBaseScale * value.magnification)) }.onEnded { _ in mapBaseScale = mapScale })
-            }.frame(height: min(560, max(240, viewportHeight * 0.58)))
+            StudyMapView(title: d.title ?? session.course, nodes: d.outline, sources: studySources,
+                         height: min(560, max(240, viewportHeight * 0.58)), jump: jump)
+            Button { Task { await shareMap() } } label: { Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44) }.accessibilityLabel("分享思维导图")
         } else { Text("暂无思维导图").font(.subheadline).foregroundStyle(Color.williamSecondary) }
+    }
+    private var studySources: [StudySource] {
+        segments.map { source in StudySource(id: source.id, offset: source.start,
+            english: document?.correction(for: source)?.english ?? source.displayEnglish) }
     }
     private func detailCaption(_ segment: TranscriptSegment) -> some View {
         let correction = original ? nil : document?.correction(for: segment)
@@ -349,59 +338,6 @@ struct LessonDetailView: View {
     }
 }
 
-struct StudySummaryNode: View {
-    let node: StudyNode
-    let depth: Int
-    let times: [UUID: Double]
-    let jump: ([UUID]) -> Void
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button { jump(node.segmentIDs) } label: {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(node.title).font(depth == 0 ? .headline : .subheadline.weight(.medium)).foregroundStyle(.primary)
-                    Spacer(minLength: 12)
-                    if let first = node.segmentIDs.first, let offset = times[first] { Text(SessionStore.readingTime(offset)).font(.caption).foregroundStyle(Color.williamSecondary) }
-                }.frame(minHeight: 44).contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityIdentifier("summary-source-\(node.id)")
-            if !node.body.isEmpty { Text(node.body).font(.body).lineSpacing(6) }
-            ForEach(node.children) { child in StudySummaryNode(node: child, depth: depth + 1, times: times, jump: jump).padding(.leading, 12) }
-        }.padding(.vertical, 6)
-    }
-}
-struct LessonMindMap: View {
-    let title: String
-    let nodes: [StudyNode]
-    let jump: ([UUID]) -> Void
-    var body: some View {
-        HStack(alignment: .center, spacing: 20) {
-            Text(title).font(.headline).frame(width: 160)
-            Rectangle().fill(Color.williamAccent.opacity(0.25)).frame(width: 1)
-            VStack(alignment: .leading, spacing: 22) {
-                ForEach(nodes) { node in MindMapBranch(node: node, jump: jump) }
-            }
-        }.fixedSize(horizontal: false, vertical: true)
-    }
-}
-struct MindMapBranch: View {
-    let node: StudyNode
-    let jump: ([UUID]) -> Void
-    var body: some View {
-        HStack(spacing: 16) {
-            Button { jump(node.segmentIDs) } label: { Text(node.title).font(.subheadline.weight(.medium)).foregroundStyle(.primary).frame(width: 180, alignment: .leading).frame(minHeight: 44).contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityIdentifier("map-source-\(node.id)")
-            if !node.children.isEmpty {
-                Rectangle().fill(Color.williamAccent.opacity(0.2)).frame(width: 1)
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(node.children) { child in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Button { jump(child.segmentIDs) } label: { Text(child.title).font(.subheadline).foregroundStyle(.primary).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle()) }.buttonStyle(.plain)
-                            ForEach(child.children) { leaf in Button { jump(leaf.segmentIDs) } label: { Text(leaf.title).font(.caption).foregroundStyle(Color.williamSecondary).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle()) }.buttonStyle(.plain) }
-                        }.frame(width: 280, alignment: .leading)
-                    }
-                }
-            }
-        }.fixedSize(horizontal: false, vertical: true)
-    }
-}
 
 struct ExportView: View {
     @EnvironmentObject private var controller: LectureController

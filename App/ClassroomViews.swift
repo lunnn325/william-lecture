@@ -144,6 +144,8 @@ struct WorkspaceView: View {
     @State private var noteContext: NoteContext?
     @State private var savedDetail = false
     @State private var liveSummary = false
+    @State private var summarySource: UUID?
+    @State private var summaryJumpRequest = 0
     @State private var loadingEarlier = false
     @State private var hasEarlier = false
     @State private var paneSessionID: UUID?
@@ -240,6 +242,22 @@ struct WorkspaceView: View {
                             }
                         }
                         .onChange(of: controller.workspaceDraft) { _, _ in follow(proxy) }
+                        .task(id: summaryJumpRequest) {
+                            guard summaryJumpRequest > 0, let sourceID = summarySource, let classroom = controller.session?.id else { return }
+                            feed.suspend(); readerDragged = false
+                            do {
+                                let records = try await controller.store.segments(classroom)
+                                guard !Task.isCancelled, controller.session?.id == classroom, summarySource == sourceID,
+                                      let index = records.firstIndex(where: { $0.id == sourceID }) else { return }
+                                // Retain a bounded neighborhood plus current rows, as with explicit history paging.
+                                let neighborhood = Array(records[max(0, index - 10)..<min(records.count, index + 20)])
+                                feed.prepend(neighborhood); hasEarlier = (feed.rows.first?.start ?? 0) > 0.1
+                                selectedCaption = WorkspaceCaption(records[index], chinese: controller.captionChinese(records[index]))
+                                try await Task.sleep(for: .milliseconds(150))
+                                guard controller.session?.id == classroom, summarySource == sourceID else { return }
+                                proxy.scrollTo(sourceID, anchor: .top); summarySource = nil
+                            } catch is CancellationError {} catch { controller.warning = error.localizedDescription }
+                        }
                         .task(id: controller.session?.id) {
                             let id = controller.session?.id
                             let rows = await controller.latestWorkspaceRows()
@@ -301,10 +319,17 @@ struct WorkspaceView: View {
             }
             .toolbar(controller.active ? .hidden : .visible, for: .tabBar)
             .sheet(isPresented: $settings) { NavigationStack { LectureSettingsView(inSheet: true) } }
-            .sheet(isPresented: $liveSummary, onDismiss: { controller.liveSummary.cancel() }) {
-                LiveSummaryView(summary: controller.liveSummary, regenerate: { controller.generateLiveSummary() })
+            .sheet(isPresented: $liveSummary, onDismiss: {
+                controller.liveSummary.cancel()
+                if summarySource != nil { summaryJumpRequest += 1 }
+            }) {
+                LiveSummaryView(summary: controller.liveSummary, regenerate: { controller.generateLiveSummary() }, jump: { ids in
+                    guard controller.liveSummary.sessionID == controller.session?.id, let id = ids.first,
+                          controller.liveSummary.sources.contains(where: { $0.id == id }) else { return }
+                    feed.suspend(); readerDragged = false; summarySource = id; liveSummary = false
+                })
             }
-            .onChange(of: controller.session?.id) { _, _ in liveSummary = false; controller.liveSummary.cancel(clear: true) }
+            .onChange(of: controller.session?.id) { _, _ in summarySource = nil; liveSummary = false; controller.liveSummary.cancel(clear: true) }
             .sheet(isPresented: $status) { NavigationStack { DiagnosticsView() } }
             .sheet(isPresented: $courses) { CoursePickerView() }
             .sheet(item: $noteContext) { NoteEditorView(context: $0).id($0.id) }
