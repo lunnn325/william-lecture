@@ -62,6 +62,11 @@ public actor SessionStore {
     // it never replaces the incrementally written journal and is discarded on a classroom switch.
     private var translationSession: UUID?
     private var translationIndex: [UUID: TranscriptSegment] = [:]
+    private var localPendingIDs: Set<UUID> = []
+    private var localOrder: [UUID] = []
+    private var localOrderDirty = true
+    private var localOldest = 0
+    private var localNewest = -1
     public nonisolated let root: URL
     public init(root: URL) {
         self.root = root
@@ -113,7 +118,13 @@ public actor SessionStore {
     public func append(_ segment: TranscriptSegment, session: UUID) throws {
         try requireSession(session)
         try JSONLines.append(segment, to: folder(session).appendingPathComponent("transcript.jsonl"))
-        if translationSession == session { translationIndex[segment.id] = segment }
+        if translationSession == session {
+            if translationIndex[segment.id]?.start != segment.start { localOrderDirty = true }
+            translationIndex[segment.id] = segment
+            if Self.needsLocalTranslation(segment) {
+                if localPendingIDs.insert(segment.id).inserted { localOrderDirty = true }
+            } else { localPendingIDs.remove(segment.id) }
+        }
         if pendingSession == session {
             if !segment.prefersLocalOnly && (segment.status == .pending || segment.status == .failed) { pendingIndex[segment.id] = segment }
             else { pendingIndex.removeValue(forKey: segment.id) }
@@ -125,6 +136,8 @@ public actor SessionStore {
         var index: [UUID: TranscriptSegment] = [:]
         try JSONLines.scan(TranscriptSegment.self, at: folder(session).appendingPathComponent("transcript.jsonl")) { index[$0.id] = $0 }
         translationIndex = index; translationSession = session
+        localPendingIDs = Set(index.values.filter(Self.needsLocalTranslation).map(\.id))
+        localOrder = []; localOrderDirty = true; localOldest = 0; localNewest = -1
     }
     public func translationSnapshot(_ source: TranscriptSegment, session: UUID) throws -> TranscriptSegment? {
         guard !isDeleted(session), FileManager.default.fileExists(atPath: folder(session).appendingPathComponent("session.json").path) else { return nil }
@@ -259,9 +272,24 @@ public actor SessionStore {
     }
     public func localPending(_ session: UUID, newestFirst: Bool = false) throws -> TranscriptSegment? {
         try loadTranslationIndex(session)
-        return translationIndex.values.filter {
-            $0.localEnabled == true && $0.validLocalChinese == nil && $0.finalChinese == nil && $0.localAttemptedRevision != $0.sourceRevision
-        }.sorted { newestFirst ? $0.start > $1.start : $0.start < $1.start }.first
+        if localOrderDirty {
+            localOrder = localPendingIDs.sorted {
+                let a = translationIndex[$0]!.start, b = translationIndex[$1]!.start
+                return a == b ? $0.uuidString < $1.uuidString : a < b
+            }
+            localOldest = 0; localNewest = localOrder.count - 1; localOrderDirty = false
+        }
+        while localOldest <= localNewest {
+            let index = newestFirst ? localNewest : localOldest
+            let id = localOrder[index]
+            if localPendingIDs.contains(id) { return translationIndex[id] }
+            if newestFirst { localNewest -= 1 } else { localOldest += 1 }
+        }
+        return nil
+    }
+    private static func needsLocalTranslation(_ source: TranscriptSegment) -> Bool {
+        source.localEnabled == true && source.localAttemptedRevision != source.sourceRevision &&
+            source.finalChinese == nil && source.validLocalChinese == nil
     }
     public func beginLocal(_ source: TranscriptSegment, session: UUID, request: UUID) throws -> TranscriptSegment? {
         guard !Task.isCancelled, var current = try translationSnapshot(source, session: session), current.localEnabled == true,
@@ -499,7 +527,10 @@ public actor SessionStore {
     }
     func discardIndexes(for id: UUID) {
         if pendingSession == id { pendingSession = nil; pendingIndex = [:] }
-        if translationSession == id { translationSession = nil; translationIndex = [:] }
+        if translationSession == id {
+            translationSession = nil; translationIndex = [:]; localPendingIDs = []; localOrder = []
+            localOrderDirty = true; localOldest = 0; localNewest = -1
+        }
     }
     public nonisolated static func timestamp(_ seconds: Double) -> String {
         let total = max(0, Int(seconds)); return String(format: "%02d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)

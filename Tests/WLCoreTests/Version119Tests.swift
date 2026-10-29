@@ -2,6 +2,26 @@ import XCTest
 @testable import WLCore
 
 final class Version119Tests: XCTestCase {
+    func testLocalQueueIndexTracksNewRevisionsAndClassroomSwitches() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(root: root), session = LectureSession(course: "ECON1111")
+        try await store.save(session)
+        var first = TranscriptSegment(start: 0, end: 2, english: "First."); first.localEnabled = true
+        var last = TranscriptSegment(start: 5, end: 7, english: "Last."); last.localEnabled = true
+        try await store.append(first, session: session.id); try await store.append(last, session: session.id)
+        let oldest = try await store.localPending(session.id); XCTAssertEqual(oldest?.id, first.id)
+        let newest = try await store.localPending(session.id, newestFirst: true); XCTAssertEqual(newest?.id, last.id)
+        let token = UUID(); let begun = try await store.beginLocal(first, session: session.id, request: token)
+        _ = try await store.applyLocal(try XCTUnwrap(begun), session: session.id, request: token, chinese: "第一句", at: Date())
+        let pending = try await store.localPending(session.id); XCTAssertEqual(pending?.id, last.id)
+        first.revision = 2; first.english = "Corrected first."
+        try await store.append(first, session: session.id)
+        let revised = try await store.localPending(session.id); XCTAssertEqual(revised?.id, first.id)
+        let other = LectureSession(course: "FINN2003"); try await store.save(other)
+        let empty = try await store.localPending(other.id); XCTAssertNil(empty)
+        let restored = try await store.localPending(session.id); XCTAssertEqual(restored?.id, first.id)
+    }
     func testAliasBatchAcceptsReorderingAndIsolatesDuplicatesUnknownAndMissing() {
         let a = TranscriptSegment(start: 0, end: 2, english: "It is not five."), b = TranscriptSegment(start: 3, end: 4, english: "A name.")
         let map = RevisionBatch([a, b])
