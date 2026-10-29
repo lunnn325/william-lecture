@@ -75,6 +75,7 @@ struct LessonDetailView: View {
     @State private var sharing = false
     @State private var showUsage = false
     @State private var conversationOpen = false
+    @State private var liveSummaryOpen = false
     @State private var viewportHeight: CGFloat = 800
     @State private var jumpID: UUID?
     @State private var jumpRequest = 0
@@ -154,6 +155,9 @@ struct LessonDetailView: View {
             ToolbarItem(placement: .topBarTrailing) { Button { export = true } label: { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("导出课堂") }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    Button("实时总结", systemImage: "text.alignleft") {
+                        controller.generateLiveSummary(for: session); liveSummaryOpen = true
+                    }.accessibilityIdentifier("summarize-lesson")
                     Button("修改名称", systemImage: "pencil") { name = session.displayTitle; renaming = true }.disabled(controller.busy)
                     Button("清理录音", systemImage: "waveform.slash", role: .destructive) {
                         Task { removal = await LibraryRemovalRequest.prepare(session, audioOnly: true, store: controller.store) }
@@ -171,14 +175,19 @@ struct LessonDetailView: View {
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { controller.generateLiveSummary(for: session); conversationOpen = true } label: { Image(systemName: "bubble.left.and.bubble.right") }
-                    .accessibilityLabel("实时总结与对话").accessibilityIdentifier("open-lesson-conversation")
+                Button { conversationOpen = true } label: { Image(systemName: "bubble.left.and.bubble.right") }
+                    .accessibilityLabel("对话").accessibilityIdentifier("open-lesson-conversation")
             }
         }
-        .sheet(isPresented: $conversationOpen, onDismiss: { controller.liveSummary.cancel() }) {
-            LiveSummaryView(summary: controller.liveSummary, regenerate: { controller.generateLiveSummary(for: session) }, jump: { ids in
+        .sheet(isPresented: $conversationOpen) {
+            LectureConversationSheet(session: session, conversation: controller.conversation, jump: { ids in
                 conversationOpen = false; jump(ids)
-            }, session: session, conversation: controller.conversation)
+            })
+        }
+        .sheet(isPresented: $liveSummaryOpen, onDismiss: { controller.liveSummary.cancel() }) {
+            LiveSummaryView(summary: controller.liveSummary, regenerate: { controller.generateLiveSummary(for: session) }, jump: { ids in
+                liveSummaryOpen = false; jump(ids)
+            })
         }
         .sheet(isPresented: $export) { ExportView(session: session) }
         .sheet(isPresented: $sharing) {

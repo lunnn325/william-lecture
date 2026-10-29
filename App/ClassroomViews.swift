@@ -146,6 +146,8 @@ struct WorkspaceView: View {
     @State private var noteContext: NoteContext?
     @State private var savedDetail = false
     @State private var liveSummary = false
+    @State private var conversationOpen = false
+    @State private var landscapeConversation = false
     @State private var summarySource: UUID?
     @State private var summaryJumpRequest = 0
     @State private var loadingEarlier = false
@@ -166,8 +168,136 @@ struct WorkspaceView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
+            GeometryReader { geometry in
+                let split = usesLandscapeConversation(geometry.size) && controller.active
+                HStack(spacing: 0) {
+                    Group {
                 if controller.active || controller.starting || controller.stopping {
+                    recordingWorkspace
+                } else {
+                    HistoryList()
+                        .safeAreaInset(edge: .top, spacing: 0) { compactStatus }
+                        .safeAreaInset(edge: .bottom, spacing: 0) { controls }
+                }
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if split, let selected = controller.session {
+                        Divider()
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("对话").font(.headline).padding(.horizontal, 24).padding(.vertical, 16)
+                            Divider()
+                            LectureConversationView(conversation: controller.conversation,
+                                config: TranslatorConfiguration(mock: controller.mode == .mock, model: "gpt-5.6-luna", key: Keychain.load()),
+                                jump: { ids in if stageSource(ids) { summaryJumpRequest += 1 } })
+                        }
+                        .frame(width: min(500, max(360, geometry.size.width * 0.38)))
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("landscape-conversation-pane")
+                        .task(id: selected.id) { await controller.conversation.attach(selected.id, store: controller.store) }
+                    }
+                }.onChange(of: split, initial: true) { _, value in
+                    landscapeConversation = value
+                    if value { conversationOpen = false }
+                }
+            }
+            .background(Color(uiColor: .systemBackground))
+            .navigationTitle(controller.active ? controller.course : "William Lecture")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if controller.active {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button { controller.generateLiveSummary(); liveSummary = true } label: { Image(systemName: "text.badge.checkmark") }
+                            .frame(minWidth: 44, minHeight: 44).accessibilityLabel("实时总结").accessibilityIdentifier("summarize-current")
+                            .disabled(controller.visible.isEmpty && controller.workspaceDraft == nil)
+                    }
+                }
+                if controller.active && !landscapeConversation {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button { conversationOpen = true } label: { Image(systemName: "bubble.left.and.bubble.right") }
+                            .frame(minWidth: 44, minHeight: 44).accessibilityLabel("对话").accessibilityIdentifier("open-conversation")
+                    }
+                }
+                ToolbarItem(placement: .principal) {
+                    Button { courses = true } label: {
+                        VStack(spacing: 3) {
+                            HStack(spacing: 4) {
+                                Text(controller.course).font(.headline).lineLimit(1)
+                                if !controller.active { Image(systemName: "chevron.down").font(.caption2) }
+                            }
+                            if controller.active || controller.busy {
+                                HStack(spacing: 5) {
+                                    Circle().fill(controller.recording ? Color.williamAccent : Color.williamSecondary).frame(width: 5, height: 5)
+                                    Text(recordingState).font(.caption).foregroundStyle(Color.williamSecondary)
+                                }
+                            }
+                        }.foregroundStyle(Color(uiColor: .label)).frame(minHeight: 44)
+                    }.disabled(controller.active || controller.busy).accessibilityLabel("选择课程，\(controller.course)").accessibilityIdentifier("course-picker")
+                }
+                if controller.pictureInPictureEnabled && controller.active && controller.pictureInPicture.supported {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { controller.pictureInPicture.start() } label: {
+                            CaptionPictureInPicturePreview(coordinator: controller.pictureInPicture)
+                                .frame(width: 56, height: 32).clipShape(RoundedRectangle(cornerRadius: 6))
+                                .overlay { Image(systemName: "pip.enter").font(.system(size: 17)).foregroundStyle(.white).shadow(radius: 2) }
+                                .frame(minWidth: 56, minHeight: 44)
+                        }.buttonStyle(.plain).accessibilityLabel("打开字幕小窗").accessibilityIdentifier("open-caption-pip")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { settings = true } label: { Image(systemName: "gearshape") }
+                        .accessibilityLabel("录课设置").frame(minWidth: 44, minHeight: 44)
+                }
+            }
+            .toolbar(controller.active ? .hidden : .visible, for: .tabBar)
+            .sheet(isPresented: $settings) { NavigationStack { LectureSettingsView(inSheet: true) } }
+            .sheet(isPresented: $liveSummary, onDismiss: {
+                controller.liveSummary.cancel()
+                if summarySource != nil { summaryJumpRequest += 1 }
+            }) {
+                if controller.session != nil {
+                LiveSummaryView(summary: controller.liveSummary, regenerate: { controller.generateLiveSummary() }, jump: { ids in
+                    guard controller.session != nil, let id = ids.first else { return }
+                    feed.suspend(); readerDragged = false; summarySource = id; liveSummary = false
+                })
+                }
+            }
+            .sheet(isPresented: $conversationOpen, onDismiss: { if summarySource != nil { summaryJumpRequest += 1 } }) {
+                if let selected = controller.session {
+                    LectureConversationSheet(session: selected, conversation: controller.conversation, jump: { ids in
+                        if stageSource(ids) { conversationOpen = false }
+                    })
+                }
+            }
+            .onChange(of: controller.session?.id) { _, _ in
+                summarySource = nil; liveSummary = false; conversationOpen = false; controller.liveSummary.cancel(clear: true)
+            }
+            .sheet(isPresented: $status) { NavigationStack { DiagnosticsView() } }
+            .sheet(isPresented: $courses) { CoursePickerView() }
+            .sheet(item: $noteContext) { NoteEditorView(context: $0).id($0.id) }
+            .navigationDestination(isPresented: $savedDetail) {
+                if let session = savedSession { LessonDetailView(session: session) }
+            }
+            .onDisappear { controller.lookup.close(owner: lookupOwner) }
+            .alert("结束这节课？", isPresented: $confirmStop) {
+                Button("继续录课", role: .cancel) {}
+                Button("结束并保存") { Task {
+                    await controller.stop()
+                    if let session = controller.session, session.state == .stopped { selectedCaption = nil; savedSession = session; savedDetail = true; UINotificationFeedbackGenerator().notificationOccurred(.success) }
+                } }
+            } message: { Text("音频和文字将保存在课堂记录中。") }
+        }
+    }
+    private func usesLandscapeConversation(_ size: CGSize) -> Bool {
+        guard UIDevice.current.userInterfaceIdiom == .pad, size.width >= 900 else { return false }
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.windows.contains(where: { $0.isKeyWindow }) }
+        return scene?.interfaceOrientation.isLandscape ?? (size.width > size.height)
+    }
+    private func stageSource(_ ids: [UUID]) -> Bool {
+        guard controller.session != nil, let id = ids.first else { return false }
+        feed.suspend(); readerDragged = false; summarySource = id
+        return true
+    }
+    private var recordingWorkspace: some View {
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 24) {
@@ -280,83 +410,6 @@ struct WorkspaceView: View {
                         .safeAreaInset(edge: .top, spacing: 0) { compactStatus }
                         .safeAreaInset(edge: .bottom, spacing: 0) { controls }
                     }
-                } else {
-                    HistoryList()
-                        .safeAreaInset(edge: .top, spacing: 0) { compactStatus }
-                        .safeAreaInset(edge: .bottom, spacing: 0) { controls }
-                }
-            }
-            .background(Color(uiColor: .systemBackground))
-            .navigationTitle(controller.active ? controller.course : "William Lecture")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                if controller.active {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button { controller.generateLiveSummary(); liveSummary = true } label: { Image(systemName: "text.badge.checkmark") }
-                            .frame(minWidth: 44, minHeight: 44).accessibilityLabel("实时总结").accessibilityIdentifier("summarize-current")
-                            .disabled(controller.visible.isEmpty && controller.workspaceDraft == nil)
-                    }
-                }
-                ToolbarItem(placement: .principal) {
-                    Button { courses = true } label: {
-                        VStack(spacing: 3) {
-                            HStack(spacing: 4) {
-                                Text(controller.course).font(.headline).lineLimit(1)
-                                if !controller.active { Image(systemName: "chevron.down").font(.caption2) }
-                            }
-                            if controller.active || controller.busy {
-                                HStack(spacing: 5) {
-                                    Circle().fill(controller.recording ? Color.williamAccent : Color.williamSecondary).frame(width: 5, height: 5)
-                                    Text(recordingState).font(.caption).foregroundStyle(Color.williamSecondary)
-                                }
-                            }
-                        }.foregroundStyle(Color(uiColor: .label)).frame(minHeight: 44)
-                    }.disabled(controller.active || controller.busy).accessibilityLabel("选择课程，\(controller.course)").accessibilityIdentifier("course-picker")
-                }
-                if controller.pictureInPictureEnabled && controller.active && controller.pictureInPicture.supported {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button { controller.pictureInPicture.start() } label: {
-                            CaptionPictureInPicturePreview(coordinator: controller.pictureInPicture)
-                                .frame(width: 56, height: 32).clipShape(RoundedRectangle(cornerRadius: 6))
-                                .overlay { Image(systemName: "pip.enter").font(.system(size: 17)).foregroundStyle(.white).shadow(radius: 2) }
-                                .frame(minWidth: 56, minHeight: 44)
-                        }.buttonStyle(.plain).accessibilityLabel("打开字幕小窗").accessibilityIdentifier("open-caption-pip")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { settings = true } label: { Image(systemName: "gearshape") }
-                        .accessibilityLabel("录课设置").frame(minWidth: 44, minHeight: 44)
-                }
-            }
-            .toolbar(controller.active ? .hidden : .visible, for: .tabBar)
-            .sheet(isPresented: $settings) { NavigationStack { LectureSettingsView(inSheet: true) } }
-            .sheet(isPresented: $liveSummary, onDismiss: {
-                controller.liveSummary.cancel()
-                if summarySource != nil { summaryJumpRequest += 1 }
-            }) {
-                if let selected = controller.session {
-                LiveSummaryView(summary: controller.liveSummary, regenerate: { controller.generateLiveSummary() }, jump: { ids in
-                    guard controller.session != nil, let id = ids.first else { return }
-                    feed.suspend(); readerDragged = false; summarySource = id; liveSummary = false
-                }, session: selected, conversation: controller.conversation)
-                }
-            }
-            .onChange(of: controller.session?.id) { _, _ in summarySource = nil; liveSummary = false; controller.liveSummary.cancel(clear: true) }
-            .sheet(isPresented: $status) { NavigationStack { DiagnosticsView() } }
-            .sheet(isPresented: $courses) { CoursePickerView() }
-            .sheet(item: $noteContext) { NoteEditorView(context: $0).id($0.id) }
-            .navigationDestination(isPresented: $savedDetail) {
-                if let session = savedSession { LessonDetailView(session: session) }
-            }
-            .onDisappear { controller.lookup.close(owner: lookupOwner) }
-            .alert("结束这节课？", isPresented: $confirmStop) {
-                Button("继续录课", role: .cancel) {}
-                Button("结束并保存") { Task {
-                    await controller.stop()
-                    if let session = controller.session, session.state == .stopped { selectedCaption = nil; savedSession = session; savedDetail = true; UINotificationFeedbackGenerator().notificationOccurred(.success) }
-                } }
-            } message: { Text("音频和文字将保存在课堂记录中。") }
-        }
     }
     private var emptyState: some View {
         Group {

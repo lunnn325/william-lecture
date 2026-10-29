@@ -31,14 +31,14 @@ import UIKit
         XCTAssertFalse(app.buttons["map-node-current-detail"].exists)
         app.buttons["map-toggle-current"].tap()
         app.buttons["总结"].tap()
-        app.buttons["对话"].tap()
+        capture(app, "manual-summary")
+        app.buttons["完成"].firstMatch.tap()
+        app.buttons["open-conversation"].tap()
         let input = app.descendants(matching: .any).matching(identifier: "conversation-input").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap(); input.typeText("What does this mean?")
         app.buttons["发送问题"].tap()
         XCTAssertTrue(app.staticTexts["conversation-text-assistant"].waitForExistence(timeout: 5))
         capture(app, "lecture-conversation")
-        app.buttons["总结"].tap()
-        capture(app, "manual-summary")
         app.buttons["完成"].firstMatch.tap()
         app.buttons["fixture-append-caption"].tap()
         let latest = app.textViews["caption-english-20000000-0000-0000-0000-000000000019"]
@@ -47,16 +47,59 @@ import UIKit
         XCTAssertTrue(app.staticTexts["已暂停"].waitForExistence(timeout: 5))
         app.buttons["pause-recording"].tap()
         XCTAssertTrue(app.staticTexts["录音中"].waitForExistence(timeout: 5))
+        app.buttons["open-conversation"].tap()
+        XCTAssertTrue(app.staticTexts["conversation-text-assistant"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["conversation-text-user"].label, "What does this mean?")
+        app.buttons["完成"].firstMatch.tap()
         app.buttons["summarize-current"].tap()
         XCTAssertTrue(result.waitForExistence(timeout: 5))
-        app.buttons["对话"].tap()
-        XCTAssertTrue(app.staticTexts["conversation-text-assistant"].waitForExistence(timeout: 5))
-        app.buttons["总结"].tap()
         app.buttons["summary-source-current"].tap()
         XCTAssertTrue(app.textViews["caption-english-20000000-0000-0000-0000-000000000001"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["follow-latest"].exists, "Source navigation must keep recording and suspend following")
         app.buttons["follow-latest"].tap()
         XCTAssertTrue(latest.waitForExistence(timeout: 5))
+    }
+    func testIPadLandscapeKeepsCaptionsAndConversationVisible() throws {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("iPad landscape workspace") }
+        let app = launch(active: true)
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let pane = app.otherElements["landscape-conversation-pane"]
+        XCTAssertTrue(pane.waitForExistence(timeout: 10))
+        let captions = app.scrollViews["caption-scroll"]
+        let input = app.descendants(matching: .any).matching(identifier: "conversation-input").firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        XCTAssertLessThanOrEqual(captions.frame.maxX, pane.frame.minX + 1, "Captions must occupy the left pane")
+        XCTAssertGreaterThanOrEqual(input.frame.minX, pane.frame.minX, "Conversation input must remain in the right pane")
+        input.tap(); input.typeText("What is opportunity cost?")
+        app.buttons["发送问题"].tap()
+        let answer = app.staticTexts["conversation-text-assistant"]
+        XCTAssertTrue(answer.waitForExistence(timeout: 5))
+        if app.keyboards.firstMatch.exists {
+            let hideKeyboard = app.keyboards.buttons.matching(NSPredicate(format: "label ==[c] %@ OR label ==[c] %@ OR label == %@", "Hide keyboard", "Dismiss Keyboard", "隐藏键盘")).firstMatch
+            XCTAssertTrue(hideKeyboard.waitForExistence(timeout: 5)); hideKeyboard.tap()
+            let hidden = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !app.keyboards.firstMatch.exists }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 5), .completed)
+        }
+        waitForLatestCaption(app)
+        XCTAssertTrue(answer.isHittable); XCTAssertTrue(input.isHittable)
+        XCTAssertTrue(app.buttons["pause-recording"].isHittable)
+        XCTAssertTrue(app.staticTexts["录音中"].exists)
+        capture(app, "landscape-conversation")
+        let draft = "Explain this point next"
+        input.tap(); input.typeText(draft)
+        XCUIDevice.shared.orientation = .portrait
+        let portrait = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in app.frame.height > app.frame.width }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [portrait], timeout: 10), .completed)
+        let open = app.buttons["open-conversation"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5)); open.tap()
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        XCTAssertEqual(input.value as? String, draft, "Rotation must preserve the unsent draft")
+        XCTAssertEqual(app.staticTexts.matching(identifier: "conversation-text-user").count, 1, "Restoring a draft must not send it")
+        XCTAssertTrue(app.staticTexts["conversation-text-assistant"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["conversation-text-user"].label, "What is opportunity cost?")
+        app.buttons["完成"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["pause-recording"].isHittable)
+        XCTAssertTrue(app.staticTexts["录音中"].exists)
     }
     func testCaptionAppearancePreviewAndSavedPreferences() {
         let app = launch(active: false)
@@ -336,8 +379,9 @@ import UIKit
         let bottom = app.staticTexts["recording-time"].frame.minY - 24
         XCTAssertGreaterThan(bottom - top, 20)
         let origin = app.coordinate(withNormalizedOffset: .zero)
-        let start = origin.withOffset(CGVector(dx: app.frame.width / 2, dy: top))
-        let end = origin.withOffset(CGVector(dx: app.frame.width / 2, dy: bottom))
+        let readingX = app.scrollViews["caption-scroll"].frame.midX - app.frame.minX
+        let start = origin.withOffset(CGVector(dx: readingX, dy: top))
+        let end = origin.withOffset(CGVector(dx: readingX, dy: bottom))
         for _ in 0..<3 { start.press(forDuration: 0.1, thenDragTo: end) }
         XCTAssertTrue(app.buttons["follow-latest"].waitForExistence(timeout: 5))
         XCUIDevice.shared.orientation = .portrait
@@ -379,9 +423,10 @@ import UIKit
     private func assertTabletCaptionWidth(_ app: XCUIApplication) {
         guard UIDevice.current.userInterfaceIdiom == .pad else { return }
         let row = app.descendants(matching: .any).matching(identifier: "caption-20000000-0000-0000-0000-000000000018").firstMatch
+        let captions = app.scrollViews["caption-scroll"]
         XCTAssertTrue(row.exists)
-        XCTAssertLessThanOrEqual(row.frame.minX - app.frame.minX, 32, "Tablet subtitles must reach the left reading margin")
-        XCTAssertLessThanOrEqual(app.frame.maxX - row.frame.maxX, 32, "Tablet subtitles must reach the right reading margin")
+        XCTAssertLessThanOrEqual(row.frame.minX - captions.frame.minX, 32, "Tablet subtitles must reach the left reading margin")
+        XCTAssertLessThanOrEqual(captions.frame.maxX - row.frame.maxX, 32, "Tablet subtitles must reach the right reading margin")
     }
     private func waitPreparedFiles(_ app: XCUIApplication) {
         XCTAssertTrue(app.buttons["分享 / 保存到文件"].waitForExistence(timeout: 40))

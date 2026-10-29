@@ -4,6 +4,7 @@ import WLCore
 
 @MainActor final class ConversationController: ObservableObject {
     @Published private(set) var messages: [ConversationMessage] = []
+    @Published var draftQuestion = ""
     @Published private(set) var loading = false
     @Published private(set) var error = ""
     private(set) var sessionID: UUID?
@@ -17,17 +18,21 @@ import WLCore
 
     func attach(_ id: UUID, store: SessionStore) async {
         if sessionID == id, loading { return }
-        if sessionID != id { cancel(); sessionID = id; messages = []; error = "" }
+        if sessionID != id { cancel(); sessionID = id; messages = []; error = ""; draftQuestion = "" }
         self.store = store
         let owner = token
         do {
             let saved = try await store.recoverConversation(id)
-            guard sessionID == id, token == owner else { return }
+            guard !Task.isCancelled, sessionID == id, token == owner else { return }
             messages = saved
-        } catch { if sessionID == id { self.error = error.localizedDescription } }
+        } catch {
+            guard !Task.isCancelled, sessionID == id, token == owner else { return }
+            self.error = error.localizedDescription
+        }
     }
     func send(_ question: String, retry: UUID? = nil, config: TranslatorConfiguration) {
         guard !loading, let id = sessionID, let store else { return }
+        if retry == nil { draftQuestion = "" }
         loading = true; error = ""; token = UUID(); let owner = token
         task = Task { [weak self] in
             guard let self else { return }
@@ -37,29 +42,41 @@ import WLCore
                     _ = try? await store.updateConversation(id, message: turn.message.id, request: turn.message.requestID!, text: "", state: "interrupted")
                     return
                 }
-                current = turn.message; messages = try await store.conversation(id)
+                current = turn.message
+                let started = try await store.conversation(id)
+                guard !Task.isCancelled, sessionID == id, token == owner else { return }
+                messages = started
                 let entry = UsageEntry(scope: .conversation, model: config.model)
                 if !config.mock { try await store.reserveUsage(entry, session: id) }
+                guard !Task.isCancelled, sessionID == id, token == owner else { return }
                 let answer = try await api.converse(turn.input, config: config,
                     usage: { metadata in try? await store.finishUsage(entry, metadata: metadata, session: id) },
                     reset: { [weak self] in await self?.receive("", owner: owner, reset: true) },
                     delta: { [weak self] part in await self?.receive(part, owner: owner) })
                 try Task.checkCancellation()
-                guard token == owner, sessionID == id, let current else { return }
+                guard !Task.isCancelled, token == owner, sessionID == id, let current else { return }
                 guard try await store.updateConversation(id, message: current.id, request: current.requestID!, text: answer, state: "completed") else { return }
-                messages = try await store.conversation(id)
+                guard !Task.isCancelled, sessionID == id, token == owner else { return }
+                let completed = try await store.conversation(id)
+                guard !Task.isCancelled, sessionID == id, token == owner else { return }
+                messages = completed
                 try? await store.log(Diagnostic("conversation_completed", fields: ["message": current.id.uuidString, "reasoning": "medium"]), session: id)
             } catch {
-                guard token == owner, sessionID == id else { return }
+                guard !Task.isCancelled, token == owner, sessionID == id else { return }
                 self.error = DiagnosticRedaction.redact(error.localizedDescription)
                 try? await store.log(Diagnostic("conversation_error", fields: ["error": self.error, "reasoning": "medium"]), session: id)
+                guard !Task.isCancelled, token == owner, sessionID == id else { return }
                 if let current {
                     let text = current.text, request = current.requestID!
                     _ = try? await store.updateConversation(id, message: current.id, request: request, text: text, state: "failed", error: self.error)
-                    messages = (try? await store.conversation(id)) ?? messages
+                    guard !Task.isCancelled, sessionID == id, token == owner else { return }
+                    let failed = try? await store.conversation(id)
+                    guard !Task.isCancelled, sessionID == id, token == owner else { return }
+                    if let failed { messages = failed }
                 }
             }
-            if token == owner { loading = false; task = nil; current = nil; endLease() }
+            guard !Task.isCancelled, token == owner, sessionID == id else { return }
+            loading = false; task = nil; current = nil; endLease()
         }
     }
     private func receive(_ part: String, owner: UUID, reset: Bool = false) async {
@@ -96,11 +113,27 @@ import WLCore
     }
 }
 
+struct LectureConversationSheet: View {
+    let session: LectureSession
+    @ObservedObject var conversation: ConversationController
+    let jump: ([UUID]) -> Void
+    @EnvironmentObject private var controller: LectureController
+    @Environment(\.dismiss) private var dismiss
+    private var config: TranslatorConfiguration { TranslatorConfiguration(mock: controller.mode == .mock, model: "gpt-5.6-luna", key: Keychain.load()) }
+    var body: some View {
+        NavigationStack {
+            LectureConversationView(conversation: conversation, config: config, jump: jump)
+                .navigationTitle("对话").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
+        }.task(id: session.id) { await conversation.attach(session.id, store: controller.store) }
+            .presentationDetents([.large]).presentationDragIndicator(.visible)
+    }
+}
+
 struct LectureConversationView: View {
     @ObservedObject var conversation: ConversationController
     let config: TranslatorConfiguration
     let jump: ([UUID]) -> Void
-    @State private var question = ""
     @State private var following = true
     var body: some View {
         ScrollViewReader { proxy in
@@ -139,14 +172,14 @@ struct LectureConversationView: View {
                     VStack(spacing: 8) {
                         if !conversation.error.isEmpty { Text(conversation.error).font(.footnote).foregroundStyle(Color.williamWarning) }
                         HStack(alignment: .bottom) {
-                            TextField("询问课堂内容或其他问题", text: $question, axis: .vertical).lineLimit(1...5)
+                            TextField("询问课堂内容或其他问题", text: $conversation.draftQuestion, axis: .vertical).lineLimit(1...5)
                                 .textFieldStyle(.roundedBorder).accessibilityIdentifier("conversation-input")
                             if conversation.loading {
                                 Button { conversation.cancel() } label: { Image(systemName: "stop.fill").frame(width: 44, height: 44) }.accessibilityLabel("停止回答")
                             } else {
-                                Button { let value = question; question = ""; following = true; conversation.send(value, config: config) } label: {
+                                Button { let value = conversation.draftQuestion; following = true; conversation.send(value, config: config) } label: {
                                     Image(systemName: "arrow.up.circle.fill").font(.title2).frame(width: 44, height: 44)
-                                }.disabled(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).accessibilityLabel("发送问题")
+                                }.disabled(conversation.draftQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).accessibilityLabel("发送问题")
                             }
                         }
                     }.padding(.horizontal, 20).padding(.vertical, 10).background(.bar)

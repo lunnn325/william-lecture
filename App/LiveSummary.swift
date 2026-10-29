@@ -56,19 +56,13 @@ struct LiveSummaryView: View {
     @Environment(\.dismiss) private var dismiss
     var regenerate: () -> Void
     var jump: ([UUID]) -> Void
-    let session: LectureSession
-    @ObservedObject var conversation: ConversationController
-    @EnvironmentObject private var controller: LectureController
     @State private var tab = 0
-    private var config: TranslatorConfiguration { TranslatorConfiguration(mock: controller.mode == .mock, model: "gpt-5.6-luna", key: Keychain.load()) }
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Picker("内容", selection: $tab) { Text("总结").tag(0); Text("导图").tag(1); Text("对话").tag(2) }
+                Picker("内容", selection: $tab) { Text("总结").tag(0); Text("导图").tag(1) }
                     .pickerStyle(.segmented).padding(.horizontal, 24).padding(.bottom, 8)
-                if tab == 2 {
-                    LectureConversationView(conversation: conversation, config: config, jump: jump)
-                } else { ScrollView {
+                ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if summary.snapshot != nil {
                         Text("截至 \(SessionStore.readingTime(summary.offset)) · 已定稿内容").font(.caption).foregroundStyle(.secondary)
@@ -87,7 +81,7 @@ struct LiveSummaryView: View {
                         }
                     }
                 }.frame(maxWidth: 720, alignment: .leading).padding(24).frame(maxWidth: .infinity)
-                } }
+                }
             }.navigationTitle("实时总结").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }
@@ -100,7 +94,6 @@ struct LiveSummaryView: View {
                             .accessibilityLabel("复制总结").disabled(summary.text.isEmpty)
                     }
                 }
-        }.task(id: session.id) { await conversation.attach(session.id, store: controller.store) }
-            .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+        }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
     }
 }

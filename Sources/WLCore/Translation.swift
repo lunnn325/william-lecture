@@ -149,7 +149,8 @@ public final class Translator: @unchecked Sendable {
         var output = workload.outputTokens, expanded = false
         for attempt in 1...3 {
             try Task.checkCancellation()
-            if attempt > 1 { await reset() }
+            // Keep the first attempt's visible, durable text until a complete replacement
+            // returns. A failed retry must not erase it or append another partial answer.
             do {
                 var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
                 request.httpMethod = "POST"; request.timeoutInterval = workload.timeout
@@ -183,9 +184,9 @@ public final class Translator: @unchecked Sendable {
                     switch try TranslationEvent.decode(object) {
                     case .delta(let part):
                         text += part
-                        if attempt == 1 || workload == .conversation { await delta(part) }
+                        if attempt == 1 { await delta(part) }
                     case .textDone(let full):
-                        if text.isEmpty { text = full; if attempt == 1 || workload == .conversation { await delta(full) } }
+                        if text.isEmpty { text = full; if attempt == 1 { await delta(full) } }
                     case .completed: completed = true; text = TranslationEvent.completedText(object) ?? text
                     case .ignored: break
                     }

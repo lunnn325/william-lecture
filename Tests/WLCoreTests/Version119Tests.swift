@@ -117,7 +117,9 @@ final class Version119Tests: XCTestCase {
 }
 
 private final class ResponseFixtureProtocol: URLProtocol {
+    enum Scenario { case revision, failedConversationRetry, completedConversationRetry }
     static var bodies: [[String: Any]] = []
+    static var scenario: Scenario = .revision
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -133,23 +135,44 @@ private final class ResponseFixtureProtocol: URLProtocol {
         let body = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] ?? [:]
         Self.bodies.append(body)
         let first = Self.bodies.count == 1
-        let value = "{\"english\":\"It is six.\",\"chinese\":\"是六。\",\"memory\":[]}"
+        if !first, Self.scenario == .failedConversationRetry {
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 400, httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data("{\"error\":{\"message\":\"fixture retry failure\"}}".utf8))
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        let value = Self.scenario == .revision ? "{\"english\":\"It is six.\",\"chinese\":\"是六。\",\"memory\":[]}" : "重试后的完整回答"
         var response: [String: Any] = ["id": first ? "r1" : "r2", "status": first ? "incomplete" : "completed",
             "usage": ["input_tokens": 10, "output_tokens": 20, "total_tokens": 30]]
         if first { response["incomplete_details"] = ["reason": "max_output_tokens"] }
         else { response["output"] = [["type": "message", "content": [["type": "output_text", "text": value]]]] }
         let event: [String: Any] = ["type": first ? "response.incomplete" : "response.completed", "response": response]
         let data = try! JSONSerialization.data(withJSONObject: event)
-        let stream = Data(("data: " + String(decoding: data, as: UTF8.self) + "\n\n").utf8)
+        var stream = Data()
+        if Self.scenario != .revision {
+            let delta: [String: Any] = ["type": "response.output_text.delta", "delta": first ? "已收到的部分回答" : value]
+            let bytes = try! JSONSerialization.data(withJSONObject: delta)
+            stream.append(Data(("data: " + String(decoding: bytes, as: UTF8.self) + "\n\n").utf8))
+        }
+        stream.append(Data(("data: " + String(decoding: data, as: UTF8.self) + "\n\n").utf8))
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/event-stream"])!, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: stream); client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
 }
 
+private actor ConversationRetryProbe {
+    private var text = ""
+    private var resets = 0
+    func append(_ part: String) { text += part }
+    func reset() { text = ""; resets += 1 }
+    func snapshot() -> (String, Int) { (text, resets) }
+}
+
 final class RequestPolicy119Tests: XCTestCase {
     func testRealRequestEncodingUsesMediumAndExpandsIncompleteOutputOnce() async throws {
-        ResponseFixtureProtocol.bodies = []
+        ResponseFixtureProtocol.bodies = []; ResponseFixtureProtocol.scenario = .revision
         let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [ResponseFixtureProtocol.self]
         let api = Translator(session: URLSession(configuration: configuration))
         let result = try await api.reviseAndTranslate(TranscriptSegment(start: 0, end: 2, english: "It is five."), course: "ECON1111",
@@ -162,5 +185,31 @@ final class RequestPolicy119Tests: XCTestCase {
         }
         XCTAssertEqual(ResponseFixtureProtocol.bodies[0]["max_output_tokens"] as? Int, 8192)
         XCTAssertEqual(ResponseFixtureProtocol.bodies[1]["max_output_tokens"] as? Int, 16_384)
+    }
+    func testFailedConversationRetryPreservesTheFirstPartialAnswer() async throws {
+        ResponseFixtureProtocol.bodies = []; ResponseFixtureProtocol.scenario = .failedConversationRetry
+        defer { ResponseFixtureProtocol.scenario = .revision }
+        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [ResponseFixtureProtocol.self]
+        let api = Translator(session: URLSession(configuration: configuration)), probe = ConversationRetryProbe()
+        do {
+            _ = try await api.converse("fixture", config: .init(mock: false, model: "gpt-5.6-luna", key: "fixture"),
+                reset: { await probe.reset() }, delta: { await probe.append($0) })
+            XCTFail("The retry should fail")
+        } catch { XCTAssertEqual((error as? APIError)?.status, 400) }
+        let (text, resets) = await probe.snapshot()
+        XCTAssertEqual(text, "已收到的部分回答"); XCTAssertEqual(resets, 0)
+        XCTAssertEqual(ResponseFixtureProtocol.bodies.count, 2)
+    }
+    func testCompletedConversationRetryReturnsOneReplacementWithoutStreamingIt() async throws {
+        ResponseFixtureProtocol.bodies = []; ResponseFixtureProtocol.scenario = .completedConversationRetry
+        defer { ResponseFixtureProtocol.scenario = .revision }
+        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [ResponseFixtureProtocol.self]
+        let api = Translator(session: URLSession(configuration: configuration)), probe = ConversationRetryProbe()
+        let answer = try await api.converse("fixture", config: .init(mock: false, model: "gpt-5.6-luna", key: "fixture"),
+            reset: { await probe.reset() }, delta: { await probe.append($0) })
+        let (text, resets) = await probe.snapshot()
+        XCTAssertEqual(answer, "重试后的完整回答")
+        XCTAssertEqual(text, "已收到的部分回答"); XCTAssertEqual(resets, 0)
+        XCTAssertEqual(ResponseFixtureProtocol.bodies.count, 2)
     }
 }
