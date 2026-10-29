@@ -136,6 +136,8 @@ struct WorkspaceView: View {
     @State private var nearBottom = true
     @State private var readerDragged = false
     @State private var scrollIsIdle = true
+    @State private var scrollOffset: CGFloat = 0
+    @State private var dragStartOffset: CGFloat?
     @State private var viewportSize = CGSize.zero
     @State private var settings = false
     @State private var status = false
@@ -202,9 +204,18 @@ struct WorkspaceView: View {
                         .onScrollGeometryChange(for: Bool.self) { geometry in
                             geometry.visibleRect.maxY >= geometry.contentSize.height - 80
                         } action: { _, value in nearBottom = value; resumeIfAtBottom(proxy) }
+                        .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
+                            scrollOffset = offset
+                            // A finger resting on selectable English also enters the
+                            // interacting phase. Only an actual drag dismisses lookup.
+                            if let start = dragStartOffset, !scrollIsIdle, abs(offset - start) > 6 {
+                                controller.lookup.readerScrolled(owner: lookupOwner)
+                            }
+                        }
                         .onScrollPhaseChange { _, phase in
                             scrollIsIdle = phase == .idle
-                            if phase == .interacting { controller.lookup.readerScrolled(owner: lookupOwner); readerDragged = true; feed.suspend() }
+                            if phase == .interacting { dragStartOffset = scrollOffset; readerDragged = true; feed.suspend() }
+                            if phase == .idle { dragStartOffset = nil }
                             // Layout/geometry may arrive after the idle event. Keep the
                             // drag intent until either callback observes the visible end.
                             resumeIfAtBottom(proxy)
