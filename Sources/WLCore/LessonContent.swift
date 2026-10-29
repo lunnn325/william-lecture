@@ -36,7 +36,7 @@ public struct APIResponseMetadata: Sendable {
         }
     }
 }
-public enum UsageScope: String, Codable, Sendable { case live, postLesson, lookup, manualSummary }
+public enum UsageScope: String, Codable, Sendable { case live, postLesson, lookup, manualSummary, conversation }
 public struct UsageEntry: Codable, Sendable, Identifiable {
     public var id: UUID
     public var scope: UsageScope
@@ -51,8 +51,8 @@ public struct UsageEntry: Codable, Sendable, Identifiable {
     }
 }
 public struct UsageTotals: Sendable {
-    public var live = 0, postLesson = 0, lookup = 0, manualSummary = 0, input = 0, output = 0, unknown = 0
-    public var total: Int { live + postLesson + lookup + manualSummary }
+    public var live = 0, postLesson = 0, lookup = 0, manualSummary = 0, conversation = 0, input = 0, output = 0, unknown = 0
+    public var total: Int { live + postLesson + lookup + manualSummary + conversation }
     public var chargedPostLesson = 0
     public init(_ entries: [UsageEntry]) {
         var responseIDs = Set<String>()
@@ -66,6 +66,7 @@ public struct UsageTotals: Sendable {
             case .postLesson: postLesson += u.total
             case .lookup: lookup += u.total
             case .manualSummary: manualSummary += u.total
+            case .conversation: conversation += u.total
             }
         }
     }
@@ -122,6 +123,9 @@ public struct LessonContent: Codable, Sendable {
     public var error: String?
     public var audioRepairWarning: String?
     public var updatedAt: Date
+    public var processingVersion: Int?
+    public var revisionPendingIDs: [UUID]?
+    public var study: StudyGeneration?
     public init(sessionID: UUID, segments: [TranscriptSegment]) {
         self.sessionID = sessionID; fingerprint = Self.fingerprint(segments); state = .pending
         corrected = []; outline = []; updatedAt = Date()
@@ -156,6 +160,10 @@ extension SessionStore {
         if !(try sessionMetadata(content.sessionID)).allowsAudioUse {
             content.audioRepairWarning = try audioRepairRanges(content.sessionID).isEmpty ? nil : "录音已清理，未补转写的内容无法恢复"
         }
+        if let current = try self.content(content.sessionID),
+           let study = current.study, study.updatedAt > (content.study?.updatedAt ?? .distantPast) {
+            content.study = study; content.title = current.title; content.overview = current.overview; content.outline = current.outline
+        }
         if let current = try self.content(content.sessionID), current.fingerprint == content.fingerprint,
            current.updatedAt > content.updatedAt { return false }
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .millisecondsSince1970
@@ -175,16 +183,14 @@ extension SessionStore {
     public func reserveUsage(_ entry: UsageEntry, session id: UUID) throws {
         try requireSession(id)
         guard entry.reserved >= 0 else { throw WLFailure.message("无效用量预留") }
-        if entry.scope == .postLesson {
-            guard UsageTotals(try usageEntries(id)).chargedPostLesson + entry.reserved <= 250_000 else {
-                throw LessonAPIError.budget
-            }
-        }
         try JSONLines.append(entry, to: folder(id).appendingPathComponent("usage.jsonl"))
     }
     public func finishUsage(_ entry: UsageEntry, metadata: APIResponseMetadata, session id: UUID) throws {
         try requireSession(id)
-        var result = entry; result.responseID = metadata.id; result.usage = metadata.usage; result.tier = metadata.tier
+        var result = entry
+        if let prior = try usageEntries(id).first(where: { $0.id == entry.id }),
+           prior.responseID != nil, prior.responseID != metadata.id { result.id = UUID() }
+        result.responseID = metadata.id; result.usage = metadata.usage; result.tier = metadata.tier
         try JSONLines.append(result, to: folder(id).appendingPathComponent("usage.jsonl"))
     }
     public func rename(_ id: UUID, title: String) throws {
@@ -202,7 +208,10 @@ extension SessionStore {
     public func exportStudy(_ id: UUID) throws -> URL {
         guard let content = try content(id), !content.outline.isEmpty else { throw WLFailure.message("摘要尚未完成") }
         var lines = ["# \(content.title ?? "课堂摘要")", content.overview ?? ""]
-        let times = Dictionary(uniqueKeysWithValues: try segments(id).map { ($0.id, $0.start) })
+        let rows = try segments(id)
+        if let missing = content.study?.missingRevisions, missing > 0 { lines.append("生成时有 \(missing) 段尚未完成全文修订，使用当时已有文字。") }
+        if content.hasOutdatedStudy(rows) { lines.append("内容已更新：此摘要为此前生成的版本。") }
+        let times = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.start) })
         func add(_ nodes: [StudyNode], depth: Int) {
             for n in nodes {
                 lines.append("\(String(repeating: "#", count: min(6, depth))) \(n.title)")

@@ -29,6 +29,26 @@ public struct StudySnapshot: Codable, Sendable, Equatable {
         }
         return self
     }
+    public static func decodeMapped(_ data: Data, sources: [StudySource]) throws -> Self {
+        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw WLFailure.message("总结格式无效") }
+        let aliases = Dictionary(uniqueKeysWithValues: sources.enumerated().map { ("s\($0.offset + 1)", $0.element.id.uuidString) })
+        let valid = Set(sources.map { $0.id.uuidString.lowercased() }); var counter = 0
+        func map(_ nodes: [[String: Any]]) -> [[String: Any]] {
+            nodes.map { raw in
+                var node = raw; counter += 1; node["id"] = "n\(counter)"
+                node["segmentIDs"] = (raw["segmentIDs"] as? [String] ?? []).compactMap { value -> String? in
+                    if let id = aliases[value] { return id }
+                    return valid.contains(value.lowercased()) ? value : nil
+                }
+                node["children"] = map(raw["children"] as? [[String: Any]] ?? [])
+                return node
+            }
+        }
+        object["outline"] = map(object["outline"] as? [[String: Any]] ?? [])
+        let value = try JSONDecoder().decode(Self.self, from: JSONSerialization.data(withJSONObject: object))
+        guard !value.outline.isEmpty else { throw WLFailure.message("总结未返回内容") }
+        return value
+    }
     public func markdown(sources: [StudySource]) -> String {
         let times = Dictionary(sources.map { ($0.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
         var lines = ["# \(title)", "", overview, ""]

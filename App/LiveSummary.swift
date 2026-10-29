@@ -13,7 +13,7 @@ import WLCore
     private(set) var sessionID: UUID?
     private var task: Task<Void, Never>?
     private var token = UUID()
-    private let api = Translator() // Separate connection pool; live captions retain their slots.
+    private let api = Translator(timeout: 300) // Separate connection pool; live captions retain their slots.
     func cancel(clear: Bool = false) {
         token = UUID(); task?.cancel(); task = nil; loading = false
         if clear { text = ""; error = ""; offset = 0; snapshot = nil; sources = []; sessionID = nil }
@@ -42,7 +42,10 @@ import WLCore
             } catch {
                 guard token == request else { return }
                 loading = false; task = nil
-                if !(error is CancellationError) { self.error = error.localizedDescription }
+                if !(error is CancellationError) {
+                    self.error = error.localizedDescription
+                    try? await store.log(Diagnostic("live_summary_error", fields: ["error": DiagnosticRedaction.redact(error.localizedDescription)]), session: session.id)
+                }
             }
         }
     }
@@ -53,21 +56,29 @@ struct LiveSummaryView: View {
     @Environment(\.dismiss) private var dismiss
     var regenerate: () -> Void
     var jump: ([UUID]) -> Void
+    let session: LectureSession
+    @ObservedObject var conversation: ConversationController
+    @EnvironmentObject private var controller: LectureController
     @State private var tab = 0
+    private var config: TranslatorConfiguration { TranslatorConfiguration(mock: controller.mode == .mock, model: "gpt-5.6-luna", key: Keychain.load()) }
     var body: some View {
         NavigationStack {
-            ScrollView {
+            VStack(spacing: 0) {
+                Picker("内容", selection: $tab) { Text("总结").tag(0); Text("导图").tag(1); Text("对话").tag(2) }
+                    .pickerStyle(.segmented).padding(.horizontal, 24).padding(.bottom, 8)
+                if tab == 2 {
+                    LectureConversationView(conversation: conversation, config: config, jump: jump)
+                } else { ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if summary.snapshot != nil {
                         Text("截至 \(SessionStore.readingTime(summary.offset)) · 已定稿内容").font(.caption).foregroundStyle(.secondary)
                     }
-                    if summary.loading { ProgressView("正在生成摘要").accessibilityIdentifier("live-summary-loading") }
+                    if summary.loading { ProgressView("正在生成总结").accessibilityIdentifier("live-summary-loading") }
                     else if !summary.error.isEmpty {
                         Text(summary.error).font(.subheadline).foregroundStyle(Color.williamWarning)
                         Button("重试", action: regenerate)
                     }
                     if let snapshot = summary.snapshot {
-                        Picker("内容", selection: $tab) { Text("摘要").tag(0); Text("思维导图").tag(1) }.pickerStyle(.segmented)
                         if tab == 0 {
                             Text(snapshot.overview).textSelection(.enabled).lineSpacing(6).accessibilityIdentifier("live-summary-result")
                             StudyOutlineView(nodes: snapshot.outline, sources: summary.sources, jump: jump)
@@ -76,18 +87,20 @@ struct LiveSummaryView: View {
                         }
                     }
                 }.frame(maxWidth: 720, alignment: .leading).padding(24).frame(maxWidth: .infinity)
-            }.navigationTitle("当前摘要").navigationBarTitleDisplayMode(.inline)
+                } }
+            }.navigationTitle("实时总结").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button(action: regenerate) { Image(systemName: "arrow.clockwise") }
-                            .accessibilityLabel("刷新当前摘要").disabled(summary.loading)
+                            .accessibilityLabel("刷新实时总结").disabled(summary.loading)
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button { UIPasteboard.general.string = summary.text } label: { Image(systemName: "doc.on.doc") }
-                            .accessibilityLabel("复制摘要").disabled(summary.text.isEmpty)
+                            .accessibilityLabel("复制总结").disabled(summary.text.isEmpty)
                     }
                 }
-        }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+        }.task(id: session.id) { await conversation.attach(session.id, store: controller.store) }
+            .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
     }
 }

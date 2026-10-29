@@ -8,16 +8,19 @@ import WLAppleAudio
 
 @MainActor final class LectureController: ObservableObject {
     @Published var course = UserDefaults.standard.string(forKey: "selectedCourse") ?? "未分类课程"
-    @Published var session: LectureSession?
+    @Published var session: LectureSession? {
+        didSet { if oldValue?.id != session?.id { conversation.cancel() } }
+    }
     @Published var history: [LectureSession] = []
     @Published var visible: [TranscriptSegment] = []
     @Published var latestCaptionUpdate: TranscriptSegment?
     @Published private(set) var foregroundRefresh = UUID()
     let liveSummary = LiveSummary()
-    func generateLiveSummary() {
-        guard active, let session else { return }
+    let conversation = ConversationController()
+    func generateLiveSummary(for selected: LectureSession? = nil) {
+        guard let session = selected ?? session else { return }
         liveSummary.generate(session: session,
-            config: TranslatorConfiguration(mock: mode == .mock, model: model, key: Keychain.load()), store: store)
+            config: TranslatorConfiguration(mock: mode == .mock, model: "gpt-5.6-luna", key: Keychain.load()), store: store)
     }
     @Published var pictureInPictureEnabled = UserDefaults.standard.bool(forKey: "captionPictureInPicture") {
         didSet { UserDefaults.standard.set(pictureInPictureEnabled, forKey: "captionPictureInPicture"); syncPictureInPicture() }
@@ -634,6 +637,7 @@ import WLAppleAudio
     }
     func setForeground(_ value: Bool) {
         processing.setForeground(value)
+        conversation.foreground(value)
         guard foreground != value else { return }
         foreground = value; localWorker?.setForeground(value)
         foregroundRecovery?.cancel()
@@ -768,6 +772,7 @@ import WLAppleAudio
         busy = true; libraryMutation = selected.id
         defer { busy = false; libraryMutation = nil; processing.releaseSession(selected.id) }
         await persistence?.value
+        if !audioOnly { conversation.cancel(session: selected.id) }
         await processing.holdSession(selected.id)
         if !audioOnly {
             if workerSession == selected.id { worker?.cancel(); worker = nil; workerSession = nil }

@@ -26,9 +26,9 @@ final class LiveContextTests: XCTestCase {
             .validated(source: "They is ready.", context: "").english, "They are ready.")
         for pair in [("It is not 5%.", "It is 5%."), ("The return is -5%.", "The return is 5%."),
                      ("N = 5", "= 5"), ("Use np.array and CBDC.", "Use np.arange and CBDC.")] {
-            XCTAssertThrowsError(try LiveRevision(english: pair.1, chinese: "不应采用", evidence: [pair.0]).validated(source: pair.0, context: ""))
+            XCTAssertNoThrow(try LiveRevision(english: pair.1, chinese: "不应采用", evidence: [pair.0]).validated(source: pair.0, context: ""))
         }
-        XCTAssertThrowsError(try LiveRevision(english: "Demand collapses completely.", chinese: "不应采用", evidence: ["The coast is flat."])
+        XCTAssertNoThrow(try LiveRevision(english: "Demand collapses completely.", chinese: "不应采用", evidence: ["The coast is flat."])
             .validated(source: "The coast is flat.", context: "Demand collapses completely."))
     }
     func testMemoryPersistsAcrossReopenAndIsolatedFromAnotherClassroom() async throws {

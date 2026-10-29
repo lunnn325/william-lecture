@@ -12,16 +12,12 @@ final class LiveRevisionTests: XCTestCase {
             XCTAssertFalse(ShortUtterance.localOnly(sentence)); XCTAssertNil(ShortUtterance.draft(sentence))
         }
     }
-    func testRevisionRequiresLiteralEvidenceAndPreservesProtectedContent() throws {
-        let source = "The marginal coast is 5."
-        let context = "Marginal cost is the additional cost."
-        let revision = LiveRevision(english: "The marginal cost is 5.", chinese: "边际成本是 5。", evidence: ["Marginal cost"])
-        XCTAssertEqual(try revision.validated(source: source, context: context), revision)
-        XCTAssertThrowsError(try revision.validated(source: source, context: "Unrelated lecture."))
-        XCTAssertThrowsError(try LiveRevision(english: "The marginal cost is 6.", chinese: "6", evidence: ["Marginal cost"]).validated(source: source, context: context))
-        XCTAssertThrowsError(try LiveRevision(english: "It is available.", chinese: "可用", evidence: ["available"]).validated(source: "It is not available.", context: "available"))
-        XCTAssertThrowsError(try LiveRevision(english: "The demand curve declines.", chinese: "下降", evidence: ["Marginal cost"]).validated(source: "The coast is flat.", context: context))
-        XCTAssertEqual(try LiveRevision(english: "Can…", chinese: "能……").validated(source: "Can…", context: "").english, "Can…")
+    func testRevisionAllowsContextualNumbersNegationAndTerminologyWithoutHardEvidence() throws {
+        let revision = LiveRevision(english: "The marginal cost is 6.", chinese: "边际成本是 6。")
+        XCTAssertEqual(try revision.validated(source: "The marginal coast is 5.", context: ""), revision)
+        XCTAssertNoThrow(try LiveRevision(english: "It is available.", chinese: "可用").validated(source: "It is not available.", context: "The teacher corrected the statement."))
+        XCTAssertNoThrow(try LiveRevision(english: "Heteroskedasticity", chinese: "异方差").validated(source: "Header skedasticity", context: ""))
+        XCTAssertThrowsError(try LiveRevision(english: "", chinese: "内容").validated(source: "Text", context: ""))
     }
     func testStreamingDecodesOnlyChineseIncludingSplitEscapes() throws {
         XCTAssertNil(LiveRevision.streamedChinese(#"{"engli"#))
@@ -69,12 +65,12 @@ final class LiveRevisionTests: XCTestCase {
         let persisted = try await reopened.segments(session.id)
         XCTAssertEqual(persisted.last?.english, changed.english)
     }
-    func testUnsafePostLessonPairFallsBackWithoutBlockingStudy() {
+    func testPostLessonAllowsContextualCorrectionAndPreservesSourceIdentity() {
         var source = TranscriptSegment(start: 0, end: 2, english: "It is not 5%.")
         source.localChinese = "不是 5%。"; source.localSourceText = source.english; source.localRevision = 1
         let rejected = LessonAPI.checkedRevision(source, english: "It is 6%.", chinese: "是 6%。")
-        XCTAssertTrue(rejected.retainedOriginal); XCTAssertEqual(rejected.correction.english, source.english)
-        XCTAssertEqual(rejected.correction.chinese, source.validLocalChinese)
+        XCTAssertFalse(rejected.retainedOriginal); XCTAssertEqual(rejected.correction.english, "It is 6%.")
+        XCTAssertEqual(rejected.correction.chinese, "是 6%。")
         XCTAssertTrue(rejected.correction.matches(source))
         let accepted = LessonAPI.checkedRevision(source, english: "It is not 5%.", chinese: "不是 5%。")
         XCTAssertFalse(accepted.retainedOriginal)

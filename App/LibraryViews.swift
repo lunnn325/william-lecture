@@ -74,6 +74,7 @@ struct LessonDetailView: View {
     @State private var shareFiles: [URL] = []
     @State private var sharing = false
     @State private var showUsage = false
+    @State private var conversationOpen = false
     @State private var viewportHeight: CGFloat = 800
     @State private var jumpID: UUID?
     @State private var jumpRequest = 0
@@ -117,6 +118,18 @@ struct LessonDetailView: View {
                             }
                         }.font(.footnote).foregroundStyle(Color.williamSecondary)
                     }
+                    if let study = document?.study {
+                        if study.state == .generating || study.state == .pending { ProgressView("正在生成摘要与导图") }
+                        if let message = study.error { Text(message).font(.footnote).foregroundStyle(Color.williamWarning) }
+                        if study.missingRevisions > 0, !document!.outline.isEmpty { Text("生成时有 \(study.missingRevisions) 段尚未完成全文修订").font(.caption).foregroundStyle(.secondary) }
+                        if document?.hasOutdatedStudy(segments) == true { Text("内容已更新，可重新生成").font(.caption).foregroundStyle(.secondary) }
+                    }
+                    if tab != 0 {
+                        Button(document?.outline.isEmpty == false ? "重新生成摘要与导图" : "生成摘要与导图") {
+                            controller.processing.generateStudy(session, mock: controller.mode == .mock)
+                        }.disabled(controller.active || document?.study?.state == .generating || document?.study?.state == .pending)
+                            .accessibilityIdentifier("generate-study")
+                    }
                     if tab == 0 { transcript }
                     else if tab == 1 { summary }
                     else { mindMap }
@@ -155,6 +168,17 @@ struct LessonDetailView: View {
                         Button("保存") { Task { do { try await controller.store.rename(session.id, title: name); await load(); await controller.refreshHistory() } catch { self.error = error.localizedDescription } } }
                     }
             }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { controller.generateLiveSummary(for: session); conversationOpen = true } label: { Image(systemName: "bubble.left.and.bubble.right") }
+                    .accessibilityLabel("实时总结与对话").accessibilityIdentifier("open-lesson-conversation")
+            }
+        }
+        .sheet(isPresented: $conversationOpen, onDismiss: { controller.liveSummary.cancel() }) {
+            LiveSummaryView(summary: controller.liveSummary, regenerate: { controller.generateLiveSummary(for: session) }, jump: { ids in
+                conversationOpen = false; jump(ids)
+            }, session: session, conversation: controller.conversation)
         }
         .sheet(isPresented: $export) { ExportView(session: session) }
         .sheet(isPresented: $sharing) {
@@ -195,7 +219,7 @@ struct LessonDetailView: View {
                     Text(totals.total == 0 ? "用量未返回" : "\(totals.total.formatted()) tokens\(totals.unknown > 0 ? " · 部分用量未返回" : "")").font(.caption).foregroundStyle(Color.williamSecondary)
                 }.buttonStyle(.plain)
                 if showUsage {
-                    if totals.total > 0 { Text("已返回统计：输入 \(totals.input) · 输出 \(totals.output)\n实时 \(totals.live) · 课后 \(totals.postLesson) · 查词 \(totals.lookup) · 手动摘要 \(totals.manualSummary)").font(.caption).foregroundStyle(Color.williamSecondary) }
+                    if totals.total > 0 { Text("已返回统计：输入 \(totals.input) · 输出 \(totals.output)\n实时 \(totals.live) · 课后 \(totals.postLesson) · 查词 \(totals.lookup) · 实时总结 \(totals.manualSummary) · 对话 \(totals.conversation)").font(.caption).foregroundStyle(Color.williamSecondary) }
                     if totals.unknown > 0 { Text("\(totals.unknown) 次请求的用量未返回").font(.caption).foregroundStyle(Color.williamSecondary) }
                 }
             }

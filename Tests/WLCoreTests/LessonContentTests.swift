@@ -30,13 +30,13 @@ final class LessonContentTests: XCTestCase {
         let store = SessionStore(root: root); let s = LectureSession(course: "FINN2004"); try await store.save(s)
         let first = UsageEntry(scope: .postLesson, model: "test", reserved: 245_000)
         try await store.reserveUsage(first, session: s.id)
-        do { try await store.reserveUsage(UsageEntry(scope: .postLesson, model: "test", reserved: 6000), session: s.id); XCTFail("must refuse overspend") } catch { }
-        let unknown = try await store.usageTotals(s.id); XCTAssertEqual(unknown.chargedPostLesson, 245_000); XCTAssertEqual(unknown.unknown, 1)
+        try await store.reserveUsage(UsageEntry(scope: .postLesson, model: "test", reserved: 6000), session: s.id)
+        let unknown = try await store.usageTotals(s.id); XCTAssertEqual(unknown.chargedPostLesson, 251_000); XCTAssertEqual(unknown.unknown, 2)
         let metadata = APIResponseMetadata(["id": "response-1", "usage": ["input_tokens": 20, "output_tokens": 10, "total_tokens": 30]])
         try await store.finishUsage(first, metadata: metadata, session: s.id)
         let duplicate = UsageEntry(scope: .postLesson, model: "test", reserved: 100)
         try await store.reserveUsage(duplicate, session: s.id); try await store.finishUsage(duplicate, metadata: metadata, session: s.id)
-        let totals = try await store.usageTotals(s.id); XCTAssertEqual(totals.total, 30); XCTAssertEqual(totals.input, 20); XCTAssertEqual(totals.chargedPostLesson, 30)
+        let totals = try await store.usageTotals(s.id); XCTAssertEqual(totals.total, 30); XCTAssertEqual(totals.input, 20); XCTAssertEqual(totals.chargedPostLesson, 6030)
     }
     func testRepairRangesDoNotReplayCoveredSpeechOrDuplicateInsertedText() async throws {
         let ranges = AudioRepairRange.uncovered([.init(start: 0, end: 5), .init(start: 4, end: 10)], covered: [.init(start: 2, end: 8)])

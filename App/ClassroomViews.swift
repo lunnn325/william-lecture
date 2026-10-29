@@ -282,7 +282,7 @@ struct WorkspaceView: View {
                 if controller.active {
                     ToolbarItem(placement: .topBarLeading) {
                         Button { controller.generateLiveSummary(); liveSummary = true } label: { Image(systemName: "text.badge.checkmark") }
-                            .frame(minWidth: 44, minHeight: 44).accessibilityLabel("总结当前内容").accessibilityIdentifier("summarize-current")
+                            .frame(minWidth: 44, minHeight: 44).accessibilityLabel("实时总结").accessibilityIdentifier("summarize-current")
                             .disabled(controller.visible.isEmpty && controller.workspaceDraft == nil)
                     }
                 }
@@ -323,11 +323,12 @@ struct WorkspaceView: View {
                 controller.liveSummary.cancel()
                 if summarySource != nil { summaryJumpRequest += 1 }
             }) {
+                if let selected = controller.session {
                 LiveSummaryView(summary: controller.liveSummary, regenerate: { controller.generateLiveSummary() }, jump: { ids in
-                    guard controller.liveSummary.sessionID == controller.session?.id, let id = ids.first,
-                          controller.liveSummary.sources.contains(where: { $0.id == id }) else { return }
+                    guard controller.session != nil, let id = ids.first else { return }
                     feed.suspend(); readerDragged = false; summarySource = id; liveSummary = false
-                })
+                }, session: selected, conversation: controller.conversation)
+                }
             }
             .onChange(of: controller.session?.id) { _, _ in summarySource = nil; liveSummary = false; controller.liveSummary.cancel(clear: true) }
             .sheet(isPresented: $status) { NavigationStack { DiagnosticsView() } }
